@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/arturgomes/tnt/internal/config"
@@ -12,6 +13,7 @@ import (
 	"github.com/arturgomes/tnt/internal/scanner"
 	"github.com/arturgomes/tnt/internal/session"
 	"github.com/arturgomes/tnt/internal/theme"
+	"github.com/arturgomes/tnt/internal/todos"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -147,6 +149,7 @@ type pickerModel struct {
 	detailRepo *scanner.Repo
 	preview    string
 	lastPane   string
+	todoGroups []todos.ProjectGroup
 	theme      *theme.Theme
 	state      pickerState
 	selected   *scanner.Repo
@@ -171,22 +174,46 @@ var extraKeys = pickerKeys{
 }
 
 func newPicker(repos []scanner.Repo, t *theme.Theme, recentList *recents.List) pickerModel {
-	var activeItems, inactiveItems []list.Item
+	var activeRepos, inactiveRepos []scanner.Repo
+
+	// Current session name — exclude from list so position 0 is the switch target
+	currentSession, _ := exec.Command("tmux", "display-message", "-p", "#S").Output()
+	current := strings.TrimSpace(string(currentSession))
 
 	for _, r := range repos {
-		if r.HasSession || recentList.Index(r.Name) >= 0 {
-			activeItems = append(activeItems, repoItem{repo: r})
+		if r.Name == current {
+			continue
+		}
+		if r.HasSession {
+			activeRepos = append(activeRepos, r)
 		} else {
-			inactiveItems = append(inactiveItems, repoItem{repo: r})
+			inactiveRepos = append(inactiveRepos, r)
 		}
 	}
 
+	// Sort active by recency (most recent first), unknown recents at end
+	sort.SliceStable(activeRepos, func(i, j int) bool {
+		ri := recentList.Index(activeRepos[i].Name)
+		rj := recentList.Index(activeRepos[j].Name)
+		if ri == -1 {
+			ri = 9999
+		}
+		if rj == -1 {
+			rj = 9999
+		}
+		return ri < rj
+	})
+
 	var items []list.Item
-	items = append(items, activeItems...)
-	if len(activeItems) > 0 && len(inactiveItems) > 0 {
+	for _, r := range activeRepos {
+		items = append(items, repoItem{repo: r})
+	}
+	if len(activeRepos) > 0 && len(inactiveRepos) > 0 {
 		items = append(items, repoItem{divider: true})
 	}
-	items = append(items, inactiveItems...)
+	for _, r := range inactiveRepos {
+		items = append(items, repoItem{repo: r})
+	}
 
 	delegate := list.NewDefaultDelegate()
 	delegate.SetSpacing(0)
@@ -404,6 +431,8 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.list.SetSize(colW, msg.Height-2)
 			m.detailList.SetSize(colW, msg.Height-2)
+		} else if len(m.todoGroups) > 0 && msg.Width >= 60 {
+			m.list.SetSize(msg.Width/2, msg.Height-2)
 		} else {
 			m.list.SetSize(msg.Width, msg.Height-2)
 		}
@@ -415,6 +444,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if m.list.FilterState() == list.Filtering {
+			m.list.SetSize(m.width, m.height-2)
 			var cmd tea.Cmd
 			m.list, cmd = m.list.Update(msg)
 			return m, cmd
@@ -509,6 +539,9 @@ func (m pickerModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
 		if m.list.FilterState() == list.FilterApplied {
+			if len(m.todoGroups) > 0 && m.width >= 60 {
+				m.list.SetSize(m.width/2, m.height-2)
+			}
 			var cmd tea.Cmd
 			m.list, cmd = m.list.Update(msg)
 			return m, cmd
@@ -683,7 +716,85 @@ func (m pickerModel) View() string {
 		Padding(0, 2).
 		Render("↵ open  → details  b branch  l layout  n new  d delete  / filter  esc quit")
 
-	return m.list.View() + "\n" + help
+	isFiltering := m.list.FilterState() == list.Filtering || m.list.FilterState() == list.FilterApplied
+	dashboard := m.renderDashboard()
+	if dashboard == "" || isFiltering {
+		return m.list.View() + "\n" + help
+	}
+
+	sepHeight := m.height - 3
+	if sepHeight < 1 {
+		sepHeight = 1
+	}
+	sep := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(m.theme.Border)).
+		Render(strings.Repeat("│\n", sepHeight))
+
+	columns := lipgloss.JoinHorizontal(lipgloss.Top, m.list.View(), sep, dashboard)
+	return columns + "\n" + help
+}
+
+func (m pickerModel) renderDashboard() string {
+	if len(m.todoGroups) == 0 || m.width < 60 {
+		return ""
+	}
+
+	dashW := m.width - m.width/2 - 2
+	if dashW < 20 {
+		return ""
+	}
+
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color(m.theme.Blue)).
+		Padding(0, 1).
+		Render(fmt.Sprintf("todos (%d)", todos.ActiveCount(m.todoGroups)))
+
+	maxH := m.height - 5
+	var lines []string
+	lines = append(lines, title)
+	lines = append(lines, "")
+
+	for _, g := range m.todoGroups {
+		if len(g.Active) == 0 {
+			continue
+		}
+		if len(lines) >= maxH {
+			break
+		}
+
+		header := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(m.theme.Purple)).
+			Bold(true).
+			Render(g.Name)
+
+		if g.Done > 0 {
+			header += lipgloss.NewStyle().
+				Foreground(lipgloss.Color(m.theme.Gray)).
+				Render(fmt.Sprintf(" +%d done", g.Done))
+		}
+		lines = append(lines, "  "+header)
+
+		for _, t := range g.Active {
+			if len(lines) >= maxH {
+				break
+			}
+			bullet := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(m.theme.Yellow)).
+				Render("○")
+			text := t.Text
+			if len(text) > dashW-6 {
+				text = text[:dashW-9] + "..."
+			}
+			todoLine := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(m.theme.FG)).
+				Render(text)
+			lines = append(lines, "    "+bullet+" "+todoLine)
+		}
+		lines = append(lines, "")
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 func runPicker() {
@@ -692,8 +803,10 @@ func runPicker() {
 
 	repos := scanner.Scan(cfg)
 	recentList := recents.Load(cfg.Paths.State)
+	todoGroups := todos.Load(cfg.Paths.State)
 
 	m := newPicker(repos, t, recentList)
+	m.todoGroups = todoGroups
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	result, err := p.Run()
 	if err != nil {
