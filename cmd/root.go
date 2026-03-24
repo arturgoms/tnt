@@ -27,7 +27,7 @@ var rootCmd = &cobra.Command{
 		return nil
 	},
 	Run: func(cmd *cobra.Command, args []string) {
-		stub("repo picker / home screen")
+		runPicker()
 	},
 }
 
