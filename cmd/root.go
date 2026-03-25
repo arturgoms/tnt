@@ -57,6 +57,7 @@ func init() {
 
 	// tnt plan (update, open, dashboard)
 	planCmd.AddCommand(planUpdateCmd)
+	planCmd.AddCommand(planInboxCmd)
 	planCmd.AddCommand(planOpenCmd)
 	planCmd.AddCommand(planDashboardCmd)
 	rootCmd.AddCommand(planCmd)
@@ -177,10 +178,20 @@ var planCmd = &cobra.Command{
 }
 
 var planUpdateCmd = &cobra.Command{
-	Use:   "update",
-	Short: "Post to comms.md",
+	Use:                "update [flags]",
+	Short:              "Post to comms.md and mark plan steps complete",
+	Args:               cobra.ArbitraryArgs,
+	DisableFlagParsing: true,
 	Run: func(cmd *cobra.Command, args []string) {
-		stub("plan update")
+		runPlanUpdate(args)
+	},
+}
+
+var planInboxCmd = &cobra.Command{
+	Use:   "inbox",
+	Short: "Show pending questions/blocks targeting this repo",
+	Run: func(cmd *cobra.Command, args []string) {
+		runPlanInbox()
 	},
 }
 
