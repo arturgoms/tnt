@@ -215,6 +215,8 @@ type pickerModel struct {
 	lastPane       string
 	tmux           tmuxContext
 	allRepos       []scanner.Repo
+	recentList     *recents.List
+	currentSession string
 	workspaceNames []string
 	workspace      string
 	todoGroups     []todos.RepoGroup
@@ -648,12 +650,27 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m pickerModel) rebuildListItems() []list.Item {
 	var activeRepos, inactiveRepos []scanner.Repo
 	for _, r := range m.allRepos {
+		if r.Name == m.currentSession {
+			continue
+		}
 		if r.HasSession {
 			activeRepos = append(activeRepos, r)
 		} else if m.workspace == "" || r.Workspace == m.workspace {
 			inactiveRepos = append(inactiveRepos, r)
 		}
 	}
+
+	sort.SliceStable(activeRepos, func(i, j int) bool {
+		ri := m.recentList.Index(activeRepos[i].Name)
+		rj := m.recentList.Index(activeRepos[j].Name)
+		if ri == -1 {
+			ri = 9999
+		}
+		if rj == -1 {
+			rj = 9999
+		}
+		return ri < rj
+	})
 
 	var items []list.Item
 	for _, r := range activeRepos {
@@ -1414,6 +1431,8 @@ func runPicker() {
 	m := newPicker(repos, t, recentList)
 	m.tmux = detectTmuxContext()
 	m.allRepos = repos
+	m.recentList = recentList
+	m.currentSession = m.tmux.session
 	m.workspaceNames = scanner.WorkspaceNames(cfg)
 	m.workspace = cfg.Search.DefaultWorkspace
 	if m.workspace != "" {

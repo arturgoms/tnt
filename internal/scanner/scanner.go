@@ -1,11 +1,12 @@
 package scanner
 
 import (
+	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/arturgomes/tnt/internal/config"
 	"github.com/arturgomes/tnt/internal/tmux"
@@ -186,8 +187,13 @@ func groupName(dir string) string {
 }
 
 func repoGitInfo(path string) (branch string, branchCount int, lastActivity string) {
-	if out, err := exec.Command("git", "-C", path, "branch", "--show-current").Output(); err == nil {
-		branch = strings.TrimSpace(string(out))
+	headPath := filepath.Join(path, ".git", "HEAD")
+	data, err := os.ReadFile(headPath)
+	if err == nil {
+		ref := strings.TrimSpace(string(data))
+		if strings.HasPrefix(ref, "ref: refs/heads/") {
+			branch = strings.TrimPrefix(ref, "ref: refs/heads/")
+		}
 	}
 	if branch == "" {
 		branch = "main"
@@ -203,11 +209,44 @@ func repoGitInfo(path string) (branch string, branchCount int, lastActivity stri
 		}
 	}
 
-	if out, err := exec.Command("git", "-C", path, "log", "-1", "--all", "--format=%cr").Output(); err == nil {
-		lastActivity = strings.TrimSpace(string(out))
+	indexPath := filepath.Join(path, ".git", "index")
+	if info, err := os.Stat(indexPath); err == nil {
+		lastActivity = timeAgo(info.ModTime())
 	}
 
 	return
+}
+
+func timeAgo(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		m := int(d.Minutes())
+		if m == 1 {
+			return "1 min ago"
+		}
+		return fmt.Sprintf("%d mins ago", m)
+	case d < 24*time.Hour:
+		h := int(d.Hours())
+		if h == 1 {
+			return "1 hour ago"
+		}
+		return fmt.Sprintf("%d hours ago", h)
+	case d < 30*24*time.Hour:
+		days := int(d.Hours() / 24)
+		if days == 1 {
+			return "1 day ago"
+		}
+		return fmt.Sprintf("%d days ago", days)
+	default:
+		weeks := int(d.Hours() / 24 / 7)
+		if weeks == 1 {
+			return "1 week ago"
+		}
+		return fmt.Sprintf("%d weeks ago", weeks)
+	}
 }
 
 func WorkspaceNames(cfg *config.Config) []string {
