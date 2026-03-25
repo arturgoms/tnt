@@ -57,6 +57,7 @@ type RepoContext struct {
 	WorktreeDir string
 	LayoutsDir  string
 	ProjectsDir string
+	PlansDir    string
 }
 
 func NewContext(gitRoot, sessionName, tntDir string) RepoContext {
@@ -77,6 +78,7 @@ func NewContext(gitRoot, sessionName, tntDir string) RepoContext {
 		WorktreeDir: filepath.Join(mainRoot, ".worktrees"),
 		LayoutsDir:  filepath.Join(tntDir, "layouts"),
 		ProjectsDir: filepath.Join(tntDir, "projects"),
+		PlansDir:    filepath.Join(tntDir, "plans"),
 	}
 }
 
@@ -177,6 +179,8 @@ func CreateWorktree(ctx RepoContext, branchName string) (string, error) {
 	}
 
 	copyEnvFiles(ctx.MainRoot, wtPath)
+	scaffoldPlanDir(ctx, branchName)
+	scaffoldProjectConfig(ctx)
 	return wtPath, nil
 }
 
@@ -230,6 +234,29 @@ func JumpToWorktree(ctx RepoContext, branch string, isMain bool) error {
 	}
 	exec.Command("tmux", "switch-client", "-t", ctx.SessionName).Run()
 	return nil
+}
+
+func scaffoldPlanDir(ctx RepoContext, branchName string) {
+	planDir := filepath.Join(ctx.PlansDir, branchName, ctx.RepoName)
+	if _, err := os.Stat(planDir); err == nil {
+		return
+	}
+	os.MkdirAll(planDir, 0755)
+}
+
+func scaffoldProjectConfig(ctx RepoContext) {
+	configDir := filepath.Join(ctx.ProjectsDir, ctx.RepoName)
+	configPath := filepath.Join(configDir, "config.json")
+	if _, err := os.Stat(configPath); err == nil {
+		return
+	}
+	os.MkdirAll(configDir, 0755)
+	defaultConfig := `{
+  "default_layout": "dev",
+  "services": []
+}
+`
+	os.WriteFile(configPath, []byte(defaultConfig), 0644)
 }
 
 func FetchAsync(gitRoot string) {
