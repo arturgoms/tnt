@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/arturgomes/tnt/internal/recents"
 )
 
 func runClose(args []string) {
@@ -40,24 +42,58 @@ func runClose(args []string) {
 		return
 	}
 
-	var windowIDs []string
+	var worktreeWindows []string
+	totalWindows := 0
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		totalWindows++
 		parts := strings.SplitN(line, " ", 2)
 		if len(parts) == 2 && parts[1] == branch {
-			windowIDs = append(windowIDs, parts[0])
+			worktreeWindows = append(worktreeWindows, parts[0])
 		}
 	}
 
-	if len(windowIDs) == 0 {
+	if len(worktreeWindows) == 0 {
 		exec.Command("tmux", "display-message", fmt.Sprintf("No windows found for worktree: %s", branch)).Run()
 		return
 	}
 
-	for i := len(windowIDs) - 1; i >= 0; i-- {
-		exec.Command("tmux", "kill-window", "-t", windowIDs[i]).Run()
-	}
+	remainingAfter := totalWindows - len(worktreeWindows)
 
-	exec.Command("tmux", "display-message", fmt.Sprintf("Closed %d window(s) for worktree: %s", len(windowIDs), branch)).Run()
+	if remainingAfter == 0 {
+		recentList := recents.Load(cfg.Paths.State)
+		sessions, _ := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+		activeSet := map[string]bool{}
+		for _, s := range strings.Split(strings.TrimSpace(string(sessions)), "\n") {
+			if s != "" && s != session {
+				activeSet[s] = true
+			}
+		}
+		next := ""
+		for _, name := range recentList.Repos {
+			if activeSet[name] {
+				next = name
+				break
+			}
+		}
+		if next == "" {
+			for name := range activeSet {
+				next = name
+				break
+			}
+		}
+		if next != "" {
+			exec.Command("tmux", "switch-client", "-t", next).Run()
+		}
+		exec.Command("tmux", "kill-session", "-t", session).Run()
+	} else {
+		for i := len(worktreeWindows) - 1; i >= 0; i-- {
+			exec.Command("tmux", "kill-window", "-t", worktreeWindows[i]).Run()
+		}
+		exec.Command("tmux", "display-message", fmt.Sprintf("Closed %d window(s) for %s", len(worktreeWindows), branch)).Run()
+	}
 
 	short := branch
 	if idx := strings.LastIndex(branch, "/"); idx >= 0 {
@@ -66,6 +102,9 @@ func runClose(args []string) {
 	socketName := strings.ReplaceAll(fmt.Sprintf("%s_%s", session, short), "/", "_")
 	socketPath := filepath.Join(cfg.Paths.Projects, session, "sockets", socketName+".sock")
 	os.Remove(socketPath)
+
+	nvimSession := filepath.Join(cfg.Paths.Projects, session, "nvim-sessions", socketName+".vim")
+	os.Remove(nvimSession)
 
 	gitRoot, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 	if err != nil {
