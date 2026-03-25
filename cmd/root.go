@@ -153,10 +153,11 @@ var runCmd = &cobra.Command{
 }
 
 var closeCmd = &cobra.Command{
-	Use:   "close",
+	Use:   "close [branch]",
 	Short: "Close worktree windows and cleanup",
+	Args:  cobra.ArbitraryArgs,
 	Run: func(cmd *cobra.Command, args []string) {
-		stub("close")
+		runClose(args)
 	},
 }
 
