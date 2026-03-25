@@ -9,12 +9,13 @@ import (
 )
 
 type Config struct {
-	Paths  PathsConfig  `toml:"paths"`
-	Search SearchConfig `toml:"search"`
-	Theme  ThemeConfig  `toml:"theme"`
-	Notify NotifyConfig `toml:"notify"`
-	Layout LayoutConfig `toml:"layout"`
-	Branch BranchConfig `toml:"branch"`
+	Paths      PathsConfig       `toml:"paths"`
+	Search     SearchConfig      `toml:"search"`
+	Workspaces []WorkspaceConfig `toml:"workspace"`
+	Theme      ThemeConfig       `toml:"theme"`
+	Notify     NotifyConfig      `toml:"notify"`
+	Layout     LayoutConfig      `toml:"layout"`
+	Branch     BranchConfig      `toml:"branch"`
 }
 
 type PathsConfig struct {
@@ -27,8 +28,14 @@ type PathsConfig struct {
 }
 
 type SearchConfig struct {
-	Dirs     []string `toml:"dirs"`
-	MaxDepth int      `toml:"max_depth"`
+	Dirs             []string `toml:"dirs"`
+	MaxDepth         int      `toml:"max_depth"`
+	DefaultWorkspace string   `toml:"default_workspace"`
+}
+
+type WorkspaceConfig struct {
+	Name string   `toml:"name"`
+	Dirs []string `toml:"dirs"`
 }
 
 type ThemeConfig struct {
@@ -94,6 +101,12 @@ func (c *Config) expandPaths() {
 
 	for i, d := range c.Search.Dirs {
 		c.Search.Dirs[i] = expand(d)
+	}
+
+	for i := range c.Workspaces {
+		for j, d := range c.Workspaces[i].Dirs {
+			c.Workspaces[i].Dirs[j] = expand(d)
+		}
 	}
 }
 

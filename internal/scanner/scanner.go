@@ -14,6 +14,7 @@ type Repo struct {
 	Name         string
 	Path         string
 	Group        string
+	Workspace    string
 	HasSession   bool
 	SavedWindows int
 }
@@ -21,49 +22,16 @@ type Repo struct {
 func Scan(cfg *config.Config) []Repo {
 	seen := map[string]bool{}
 	var repos []Repo
-
 	sessions := activeSessions()
 
+	for _, ws := range cfg.Workspaces {
+		for _, dir := range ws.Dirs {
+			scanDir(dir, ws.Name, cfg, seen, sessions, &repos)
+		}
+	}
+
 	for _, dir := range cfg.Search.Dirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-
-		group := groupName(dir)
-
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			full := filepath.Join(dir, entry.Name())
-
-			real, err := filepath.EvalSymlinks(full)
-			if err != nil {
-				continue
-			}
-
-			if !isGitRepo(real) {
-				if cfg.Search.MaxDepth > 1 {
-					scanNested(real, group, cfg.Search.MaxDepth-1, seen, sessions, cfg, &repos)
-				}
-				continue
-			}
-
-			if seen[real] {
-				continue
-			}
-			seen[real] = true
-
-			name := sessionName(entry.Name())
-			repos = append(repos, Repo{
-				Name:         name,
-				Path:         real,
-				Group:        group,
-				HasSession:   sessions[name],
-				SavedWindows: countSavedWindows(cfg, name),
-			})
-		}
+		scanDir(dir, "", cfg, seen, sessions, &repos)
 	}
 
 	sort.Slice(repos, func(i, j int) bool {
@@ -76,7 +44,52 @@ func Scan(cfg *config.Config) []Repo {
 	return repos
 }
 
-func scanNested(dir, group string, depth int, seen map[string]bool, sessions map[string]bool, cfg *config.Config, repos *[]Repo) {
+func scanDir(dir, workspace string, cfg *config.Config, seen map[string]bool, sessions map[string]bool, repos *[]Repo) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	group := groupName(dir)
+	if workspace != "" {
+		group = workspace
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		full := filepath.Join(dir, entry.Name())
+		real, err := filepath.EvalSymlinks(full)
+		if err != nil {
+			continue
+		}
+
+		if !isGitRepo(real) {
+			if cfg.Search.MaxDepth > 1 {
+				scanNested(real, group, workspace, cfg.Search.MaxDepth-1, seen, sessions, cfg, repos)
+			}
+			continue
+		}
+
+		if seen[real] {
+			continue
+		}
+		seen[real] = true
+
+		name := sessionName(entry.Name())
+		*repos = append(*repos, Repo{
+			Name:         name,
+			Path:         real,
+			Group:        group,
+			Workspace:    workspace,
+			HasSession:   sessions[name],
+			SavedWindows: countSavedWindows(cfg, name),
+		})
+	}
+}
+
+func scanNested(dir, group, workspace string, depth int, seen map[string]bool, sessions map[string]bool, cfg *config.Config, repos *[]Repo) {
 	if depth <= 0 {
 		return
 	}
@@ -105,6 +118,7 @@ func scanNested(dir, group string, depth int, seen map[string]bool, sessions map
 			Name:         name,
 			Path:         real,
 			Group:        group,
+			Workspace:    workspace,
 			HasSession:   sessions[name],
 			SavedWindows: countSavedWindows(cfg, name),
 		})
@@ -157,4 +171,12 @@ func groupName(dir string) string {
 		return parts[len(parts)-1]
 	}
 	return rel
+}
+
+func WorkspaceNames(cfg *config.Config) []string {
+	var names []string
+	for _, ws := range cfg.Workspaces {
+		names = append(names, ws.Name)
+	}
+	return names
 }

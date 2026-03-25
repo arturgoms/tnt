@@ -196,43 +196,48 @@ func (c tmuxContext) resolveWorkdir(repoPath string) string {
 }
 
 type pickerModel struct {
-	list       list.Model
-	detailList list.Model
-	detailRepo *scanner.Repo
-	preview    string
-	lastPane   string
-	tmux       tmuxContext
-	todoGroups []todos.RepoGroup
-	agentList  []agents.Agent
-	todo       todoModel
-	agent      agentModel
-	branch     branchModel
-	layout     layoutModel
-	theme      *theme.Theme
-	state      pickerState
-	selected   *scanner.Repo
-	action     string
-	quitting   bool
-	width      int
-	height     int
+	list           list.Model
+	detailList     list.Model
+	detailRepo     *scanner.Repo
+	preview        string
+	lastPane       string
+	tmux           tmuxContext
+	allRepos       []scanner.Repo
+	workspaceNames []string
+	workspace      string
+	todoGroups     []todos.RepoGroup
+	agentList      []agents.Agent
+	todo           todoModel
+	agent          agentModel
+	branch         branchModel
+	layout         layoutModel
+	theme          *theme.Theme
+	state          pickerState
+	selected       *scanner.Repo
+	action         string
+	quitting       bool
+	width          int
+	height         int
 }
 
 type pickerKeys struct {
-	Branch key.Binding
-	Layout key.Binding
-	New    key.Binding
-	Delete key.Binding
-	Todo   key.Binding
-	Agents key.Binding
+	Branch    key.Binding
+	Layout    key.Binding
+	New       key.Binding
+	Delete    key.Binding
+	Todo      key.Binding
+	Agents    key.Binding
+	Workspace key.Binding
 }
 
 var extraKeys = pickerKeys{
-	Branch: key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "branch")),
-	Layout: key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "layout")),
-	New:    key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new")),
-	Delete: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
-	Todo:   key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "todo")),
-	Agents: key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "agents")),
+	Branch:    key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "branch")),
+	Layout:    key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "layout")),
+	New:       key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new")),
+	Delete:    key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
+	Todo:      key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "todo")),
+	Agents:    key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "agents")),
+	Workspace: key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "workspace")),
 }
 
 func newPicker(repos []scanner.Repo, t *theme.Theme, recentList *recents.List) pickerModel {
@@ -628,6 +633,29 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m pickerModel) rebuildListItems() []list.Item {
+	var activeRepos, inactiveRepos []scanner.Repo
+	for _, r := range m.allRepos {
+		if r.HasSession {
+			activeRepos = append(activeRepos, r)
+		} else if m.workspace == "" || r.Workspace == m.workspace {
+			inactiveRepos = append(inactiveRepos, r)
+		}
+	}
+
+	var items []list.Item
+	for _, r := range activeRepos {
+		items = append(items, repoItem{repo: r})
+	}
+	if len(activeRepos) > 0 && len(inactiveRepos) > 0 {
+		items = append(items, repoItem{divider: true})
+	}
+	for _, r := range inactiveRepos {
+		items = append(items, repoItem{repo: r})
+	}
+	return items
+}
+
 func (m pickerModel) makeDimDelegate() list.DefaultDelegate {
 	d := list.NewDefaultDelegate()
 	d.SetSpacing(0)
@@ -842,6 +870,28 @@ func (m pickerModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if repo.HasSession {
 			exec.Command("tmux", "kill-session", "-t", repo.Name).Run()
 		}
+		return m, nil
+
+	case key.Matches(msg, extraKeys.Workspace):
+		if len(m.workspaceNames) == 0 {
+			return m, nil
+		}
+		idx := -1
+		for i, name := range m.workspaceNames {
+			if name == m.workspace {
+				idx = i
+				break
+			}
+		}
+		idx = (idx + 1) % (len(m.workspaceNames) + 1)
+		if idx == len(m.workspaceNames) {
+			m.workspace = ""
+			m.list.Title = "tnt"
+		} else {
+			m.workspace = m.workspaceNames[idx]
+			m.list.Title = "tnt [" + lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Green)).Render(m.workspace) + "]"
+		}
+		m.list.SetItems(m.rebuildListItems())
 		return m, nil
 
 	case key.Matches(msg, extraKeys.Todo):
@@ -1122,7 +1172,7 @@ func (m pickerModel) View() string {
 	help := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(m.theme.Gray)).
 		Padding(0, 2).
-		Render("↵ open  → details  b branch  l layout  t todo  g agents  n new  d delete  / filter  esc quit")
+		Render("↵ open  → details  b branch  l layout  t todo  g agents  w workspace  n new  d delete  / filter  esc quit")
 
 	isFiltering := m.list.FilterState() == list.Filtering || m.list.FilterState() == list.FilterApplied
 	dashboard := m.renderDashboard()
@@ -1351,6 +1401,13 @@ func runPicker() {
 
 	m := newPicker(repos, t, recentList)
 	m.tmux = detectTmuxContext()
+	m.allRepos = repos
+	m.workspaceNames = scanner.WorkspaceNames(cfg)
+	m.workspace = cfg.Search.DefaultWorkspace
+	if m.workspace != "" {
+		m.list.Title = "tnt [" + lipgloss.NewStyle().Foreground(lipgloss.Color(t.Green)).Render(m.workspace) + "]"
+		m.list.SetItems(m.rebuildListItems())
+	}
 	m.todoGroups = todoGroups
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	result, err := p.Run()
