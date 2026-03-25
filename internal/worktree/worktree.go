@@ -238,10 +238,12 @@ func JumpToWorktree(ctx RepoContext, branch string, isMain bool) error {
 
 func scaffoldPlanDir(ctx RepoContext, branchName string) {
 	planDir := filepath.Join(ctx.PlansDir, branchName, ctx.RepoName)
-	if _, err := os.Stat(planDir); err == nil {
-		return
-	}
 	os.MkdirAll(planDir, 0755)
+
+	commsFile := filepath.Join(ctx.PlansDir, branchName, "comms.md")
+	if _, err := os.Stat(commsFile); err != nil {
+		os.WriteFile(commsFile, []byte(fmt.Sprintf("# Comms: %s\n\n---\n\n", branchName)), 0644)
+	}
 }
 
 func scaffoldProjectConfig(ctx RepoContext) {
