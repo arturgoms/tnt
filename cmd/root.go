@@ -124,10 +124,12 @@ var worktreeLayoutCmd = &cobra.Command{
 }
 
 var worktreeRunCmd = &cobra.Command{
-	Use:   "run",
-	Short: "Service manager (start/stop/restart/pick)",
+	Use:                "run [start|stop|restart|switch|pick]",
+	Short:              "Service manager (start/stop/restart/switch/pick)",
+	Args:               cobra.ArbitraryArgs,
+	DisableFlagParsing: true,
 	Run: func(cmd *cobra.Command, args []string) {
-		stub("worktree run")
+		runRunWindow(args)
 	},
 }
 
