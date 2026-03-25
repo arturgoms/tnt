@@ -54,6 +54,7 @@ func init() {
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(closeCmd)
 	rootCmd.AddCommand(layoutCmd)
+	initTodoCLI()
 	rootCmd.AddCommand(todoCmd)
 	rootCmd.AddCommand(diffCmd)
 	rootCmd.AddCommand(notifyCmd)
