@@ -184,11 +184,12 @@ var diffCmd = &cobra.Command{
 }
 
 var notifyCmd = &cobra.Command{
-	Use:   "notify [message]",
-	Short: "Send a tmux status bar notification",
-	Args:  cobra.MinimumNArgs(1),
+	Use:                "notify [message] [--color COLOR] [--ttl SECONDS] [--read] [--clear]",
+	Short:              "Send/read/clear tmux status bar notifications",
+	Args:               cobra.ArbitraryArgs,
+	DisableFlagParsing: true,
 	Run: func(cmd *cobra.Command, args []string) {
-		stub("notify")
+		runNotify(args)
 	},
 }
 
