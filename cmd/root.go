@@ -65,6 +65,7 @@ func init() {
 	// tnt session (save, notify, status)
 	sessionCmd.AddCommand(sessionNotifyCmd)
 	sessionCmd.AddCommand(sessionStatusCmd)
+	sessionCmd.AddCommand(sessionKillCmd)
 	rootCmd.AddCommand(sessionCmd)
 
 	// top-level

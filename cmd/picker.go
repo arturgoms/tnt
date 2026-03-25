@@ -647,6 +647,24 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m pickerModel) nextSession() string {
+	for _, name := range m.recentList.Repos {
+		if name != m.currentSession {
+			for _, r := range m.allRepos {
+				if r.Name == name && r.HasSession {
+					return name
+				}
+			}
+		}
+	}
+	for _, r := range m.allRepos {
+		if r.HasSession && r.Name != m.currentSession {
+			return r.Name
+		}
+	}
+	return ""
+}
+
 func (m pickerModel) rebuildListItems() []list.Item {
 	var activeRepos, inactiveRepos []scanner.Repo
 	for _, r := range m.allRepos {
@@ -896,9 +914,25 @@ func (m pickerModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if repo == nil {
 			return m, nil
 		}
-		if repo.HasSession {
-			exec.Command("tmux", "kill-session", "-t", repo.Name).Run()
+		if !repo.HasSession {
+			return m, nil
 		}
+		session.Save(app.Config, repo.Name)
+		if repo.Name == m.currentSession {
+			next := m.nextSession()
+			if next != "" {
+				exec.Command("tmux", "switch-client", "-t", next).Run()
+				m.currentSession = next
+			}
+		}
+		exec.Command("tmux", "kill-session", "-t", repo.Name).Run()
+		for i := range m.allRepos {
+			if m.allRepos[i].Name == repo.Name {
+				m.allRepos[i].HasSession = false
+				break
+			}
+		}
+		m.list.SetItems(m.rebuildListItems())
 		return m, nil
 
 	case key.Matches(msg, extraKeys.Workspace):
