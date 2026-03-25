@@ -132,7 +132,7 @@ var agentJumpCmd = &cobra.Command{
 	Use:   "jump",
 	Short: "Jump to first waiting agent",
 	Run: func(cmd *cobra.Command, args []string) {
-		stub("agent jump")
+		runAgentJump()
 	},
 }
 
@@ -140,7 +140,7 @@ var agentCycleCmd = &cobra.Command{
 	Use:   "cycle",
 	Short: "Cycle through active agent sessions",
 	Run: func(cmd *cobra.Command, args []string) {
-		stub("agent cycle")
+		runAgentCycle()
 	},
 }
 

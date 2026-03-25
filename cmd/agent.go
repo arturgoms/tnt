@@ -244,6 +244,57 @@ func handleAgentDeferred(m agentModel) {
 	exec.Command("tmux", "switch-client", "-t", m.jumpTo).Run()
 }
 
+func runAgentJump() {
+	detected := agents.Detect("")
+	for _, a := range detected {
+		if a.Status == agents.StatusWaiting {
+			exec.Command("tmux", "switch-client", "-t", a.Target).Run()
+			exec.Command("tmux", "select-pane", "-t", a.Target).Run()
+			return
+		}
+	}
+	exec.Command("tmux", "display-message", "No agents waiting for input").Run()
+}
+
+func runAgentCycle() {
+	current := ""
+	if out, err := exec.Command("tmux", "display-message", "-p", "#S").Output(); err == nil {
+		current = strings.TrimSpace(string(out))
+	}
+
+	detected := agents.Detect("")
+	seen := map[string]bool{}
+	var activeSessions []string
+	for _, a := range detected {
+		if a.Status == agents.StatusRunning || a.Status == agents.StatusWaiting {
+			if !seen[a.Session] {
+				seen[a.Session] = true
+				activeSessions = append(activeSessions, a.Session)
+			}
+		}
+	}
+
+	if len(activeSessions) == 0 {
+		exec.Command("tmux", "display-message", "No active agents").Run()
+		return
+	}
+
+	nextIdx := 0
+	for i, s := range activeSessions {
+		if s == current {
+			nextIdx = (i + 1) % len(activeSessions)
+			break
+		}
+	}
+
+	next := activeSessions[nextIdx]
+	if next == current && len(activeSessions) == 1 {
+		exec.Command("tmux", "display-message", fmt.Sprintf("Only 1 active agent (%s)", next)).Run()
+		return
+	}
+	exec.Command("tmux", "switch-client", "-t", next).Run()
+}
+
 func runAgentRoster() {
 	t := app.Theme
 	m := newAgentModel(t)
