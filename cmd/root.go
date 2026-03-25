@@ -219,7 +219,7 @@ var sessionStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Status bar segment for tmux",
 	Run: func(cmd *cobra.Command, args []string) {
-		stub("session status")
+		runStatus()
 	},
 }
 
