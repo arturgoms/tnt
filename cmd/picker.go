@@ -8,12 +8,14 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/arturgomes/tnt/internal/agents"
 	"github.com/arturgomes/tnt/internal/config"
 	"github.com/arturgomes/tnt/internal/recents"
 	"github.com/arturgomes/tnt/internal/scanner"
 	"github.com/arturgomes/tnt/internal/session"
 	"github.com/arturgomes/tnt/internal/theme"
 	"github.com/arturgomes/tnt/internal/todos"
+	"github.com/arturgomes/tnt/internal/worktree"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -59,6 +61,10 @@ const (
 	stateBrowse pickerState = iota
 	stateRestore
 	stateDetail
+	stateTodo
+	stateAgent
+	stateBranch
+	stateLayout
 )
 
 type detailItem struct {
@@ -143,13 +149,65 @@ func truncateAnsi(s string, maxW int) string {
 	return s
 }
 
+type tmuxContext struct {
+	session  string
+	worktree string
+	workdir  string
+	branch   string
+}
+
+func detectTmuxContext() tmuxContext {
+	ctx := tmuxContext{}
+
+	if out, err := exec.Command("tmux", "display-message", "-p", "#S").Output(); err == nil {
+		ctx.session = strings.TrimSpace(string(out))
+	}
+
+	if out, err := exec.Command("tmux", "display-message", "-p", "#{@worktree}").Output(); err == nil {
+		ctx.worktree = strings.TrimSpace(string(out))
+	}
+
+	if out, err := exec.Command("tmux", "display-message", "-p", "#{pane_current_path}").Output(); err == nil {
+		ctx.workdir = strings.TrimSpace(string(out))
+	}
+
+	if ctx.worktree != "" {
+		ctx.branch = ctx.worktree
+	} else if out, err := exec.Command("git", "-C", ctx.workdir, "branch", "--show-current").Output(); err == nil {
+		if b := strings.TrimSpace(string(out)); b != "" {
+			ctx.branch = b
+		}
+	}
+	if ctx.branch == "" {
+		ctx.branch = "workspace"
+	}
+
+	return ctx
+}
+
+func (c tmuxContext) resolveWorkdir(repoPath string) string {
+	if c.worktree != "" {
+		wtPath := filepath.Join(repoPath, ".worktrees", c.worktree)
+		if info, err := os.Stat(wtPath); err == nil && info.IsDir() {
+			return wtPath
+		}
+	}
+	return repoPath
+}
+
 type pickerModel struct {
 	list       list.Model
 	detailList list.Model
 	detailRepo *scanner.Repo
 	preview    string
 	lastPane   string
-	todoGroups []todos.ProjectGroup
+	tmux       tmuxContext
+	todoGroups []todos.RepoGroup
+	agentList  []agents.Agent
+	todo       todoModel
+	agent      agentModel
+	branch     branchModel
+	layout     layoutModel
 	theme      *theme.Theme
 	state      pickerState
 	selected   *scanner.Repo
@@ -164,6 +222,8 @@ type pickerKeys struct {
 	Layout key.Binding
 	New    key.Binding
 	Delete key.Binding
+	Todo   key.Binding
+	Agents key.Binding
 }
 
 var extraKeys = pickerKeys{
@@ -171,6 +231,8 @@ var extraKeys = pickerKeys{
 	Layout: key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "layout")),
 	New:    key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new")),
 	Delete: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
+	Todo:   key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "todo")),
+	Agents: key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "agents")),
 }
 
 func newPicker(repos []scanner.Repo, t *theme.Theme, recentList *recents.List) pickerModel {
@@ -266,8 +328,16 @@ func newPicker(repos []scanner.Repo, t *theme.Theme, recentList *recents.List) p
 	}
 }
 
+type agentsLoadedMsg struct {
+	list []agents.Agent
+}
+
+func loadAgentsCmd() tea.Msg {
+	return agentsLoadedMsg{list: agents.Detect("")}
+}
+
 func (m pickerModel) Init() tea.Cmd {
-	return nil
+	return loadAgentsCmd
 }
 
 func (m pickerModel) selectedRepo() *scanner.Repo {
@@ -431,10 +501,60 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.list.SetSize(colW, msg.Height-2)
 			m.detailList.SetSize(colW, msg.Height-2)
+		} else if m.state == stateTodo {
+			colW := msg.Width / 3
+			if colW < 20 {
+				colW = 20
+			}
+			m.list.SetSize(colW, msg.Height-2)
+			m.todo.width = msg.Width - colW - 2
+			m.todo.height = msg.Height - 2
+		} else if m.state == stateAgent {
+			colW := msg.Width / 3
+			if colW < 20 {
+				colW = 20
+			}
+			m.list.SetSize(colW, msg.Height-2)
+			m.agent.width = msg.Width - colW - 2
+			m.agent.height = msg.Height - 2
+		} else if m.state == stateBranch {
+			colW := msg.Width / 3
+			if colW < 20 {
+				colW = 20
+			}
+			m.list.SetSize(colW, msg.Height-2)
+			m.branch.width = msg.Width - colW - 2
+			m.branch.height = msg.Height - 2
+		} else if m.state == stateLayout {
+			colW := msg.Width / 3
+			if colW < 20 {
+				colW = 20
+			}
+			m.list.SetSize(colW, msg.Height-2)
+			m.layout.width = msg.Width - colW - 2
+			m.layout.height = msg.Height - 2
 		} else if len(m.todoGroups) > 0 && msg.Width >= 60 {
 			m.list.SetSize(msg.Width/2, msg.Height-2)
 		} else {
 			m.list.SetSize(msg.Width, msg.Height-2)
+		}
+		return m, nil
+
+	case agentsLoadedMsg:
+		m.agentList = msg.list
+		if m.state == stateBrowse && len(m.agentList) > 0 && m.width >= 60 {
+			m.list.SetSize(m.width/2, m.height-2)
+		}
+		return m, nil
+
+	case agentRefreshMsg:
+		m.agentList = msg.list
+		m.agent.agents = msg.list
+		if m.agent.cursor >= len(m.agent.agents) {
+			m.agent.cursor = len(m.agent.agents) - 1
+		}
+		if m.agent.cursor < 0 {
+			m.agent.cursor = 0
 		}
 		return m, nil
 
@@ -450,6 +570,20 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		if key.Matches(msg, key.NewBinding(key.WithKeys("tab"))) && m.state != stateRestore && m.state != stateDetail {
+			switch m.state {
+			case stateBrowse:
+				return m.enterTodoState()
+			case stateTodo:
+				if m.todo.state != todoList {
+					break
+				}
+				return m.enterAgentState()
+			case stateAgent:
+				return m.enterBrowseState()
+			}
+		}
+
 		switch m.state {
 		case stateBrowse:
 			return m.updateBrowse(msg)
@@ -457,6 +591,14 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateRestore(msg)
 		case stateDetail:
 			return m.updateDetail(msg)
+		case stateTodo:
+			return m.updateTodo(msg)
+		case stateAgent:
+			return m.updateAgent(msg)
+		case stateBranch:
+			return m.updateBranch(msg)
+		case stateLayout:
+			return m.updateLayout(msg)
 		}
 	}
 
@@ -464,9 +606,188 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.state {
 	case stateDetail:
 		m.detailList, cmd = m.detailList.Update(msg)
+	case stateTodo:
+		updated, c := m.todo.Update(msg)
+		m.todo = updated.(todoModel)
+		cmd = c
+	case stateAgent:
+		updated, c := m.agent.Update(msg)
+		m.agent = updated.(agentModel)
+		cmd = c
+	case stateBranch:
+		updated, c := m.branch.Update(msg)
+		m.branch = updated.(branchModel)
+		cmd = c
+	case stateLayout:
+		updated, c := m.layout.Update(msg)
+		m.layout = updated.(layoutModel)
+		cmd = c
 	default:
 		m.list, cmd = m.list.Update(msg)
 	}
+	return m, cmd
+}
+
+func (m pickerModel) makeDimDelegate() list.DefaultDelegate {
+	d := list.NewDefaultDelegate()
+	d.SetSpacing(0)
+	d.Styles.SelectedTitle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(m.theme.Gray)).Bold(true).
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(lipgloss.Color(m.theme.Gray)).
+		Padding(0, 0, 0, 1)
+	d.Styles.SelectedDesc = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(m.theme.Border)).
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(lipgloss.Color(m.theme.Gray)).
+		Padding(0, 0, 0, 1)
+	d.Styles.NormalTitle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(m.theme.Gray)).
+		Padding(0, 0, 0, 2)
+	d.Styles.NormalDesc = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(m.theme.Border)).
+		Padding(0, 0, 0, 2)
+	return d
+}
+
+func (m pickerModel) makeActiveDelegate() list.DefaultDelegate {
+	d := list.NewDefaultDelegate()
+	d.SetSpacing(0)
+	d.Styles.SelectedTitle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(m.theme.Blue)).Bold(true).
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(lipgloss.Color(m.theme.Blue)).
+		Padding(0, 0, 0, 1)
+	d.Styles.SelectedDesc = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(m.theme.Gray)).
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(lipgloss.Color(m.theme.Blue)).
+		Padding(0, 0, 0, 1)
+	d.Styles.NormalTitle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(m.theme.FG)).
+		Padding(0, 0, 0, 2)
+	d.Styles.NormalDesc = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(m.theme.Gray)).
+		Padding(0, 0, 0, 2)
+	d.Styles.DimmedTitle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(m.theme.Gray)).
+		Padding(0, 0, 0, 2)
+	d.Styles.DimmedDesc = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(m.theme.Border)).
+		Padding(0, 0, 0, 2)
+	return d
+}
+
+func (m pickerModel) enterTodoState() (tea.Model, tea.Cmd) {
+	m.todo = newTodoModel(m.theme, app.Config.Paths.State)
+	m.todo.embedded = true
+	colW := m.width / 3
+	if colW < 20 {
+		colW = 20
+	}
+	agentH := len(m.agentList) + 3
+	m.todo.width = m.width - colW - 2
+	m.todo.height = m.height - 2 - agentH
+	m.list.SetSize(colW, m.height-2)
+	m.list.SetDelegate(m.makeDimDelegate())
+	m.state = stateTodo
+	return m, nil
+}
+
+func (m pickerModel) enterAgentState() (tea.Model, tea.Cmd) {
+	m.agent = newAgentModelWithList(m.theme, m.agentList)
+	m.agent.embedded = true
+	colW := m.width / 3
+	if colW < 20 {
+		colW = 20
+	}
+	todoH := strings.Count(m.renderTodoSection(m.height/3), "\n") + 1
+	m.agent.width = m.width - colW - 2
+	m.agent.height = m.height - 2 - todoH
+	m.list.SetSize(colW, m.height-2)
+	m.list.SetDelegate(m.makeDimDelegate())
+	m.state = stateAgent
+	return m, nil
+}
+
+func (m pickerModel) enterBrowseState() (tea.Model, tea.Cmd) {
+	m.state = stateBrowse
+	if (len(m.todoGroups) > 0 || len(m.agentList) > 0) && m.width >= 60 {
+		m.list.SetSize(m.width/2, m.height-2)
+	} else {
+		m.list.SetSize(m.width, m.height-2)
+	}
+	m.list.SetDelegate(m.makeActiveDelegate())
+	m.todoGroups = todos.Load(app.Config.Paths.State)
+	return m, nil
+}
+
+func (m pickerModel) enterBranchState(repo *scanner.Repo) (tea.Model, tea.Cmd) {
+	tntDir := filepath.Dir(app.Config.Paths.Layouts)
+	ctx := worktree.NewContext(repo.Path, repo.Name, tntDir)
+	worktree.FetchAsync(ctx.GitRoot)
+	m.branch = newBranchModel(m.theme, ctx)
+	m.branch.embedded = true
+	m.branch.width = m.width - m.width/3 - 2
+	m.branch.height = m.height - 2
+	m.list.SetSize(m.width/3, m.height-2)
+	m.list.SetDelegate(m.makeDimDelegate())
+	m.state = stateBranch
+	return m, loadBranchEntriesCmd(ctx)
+}
+
+func (m pickerModel) enterLayoutState(repo *scanner.Repo) (tea.Model, tea.Cmd) {
+	session := repo.Name
+	workdir := m.tmux.resolveWorkdir(repo.Path)
+	branch := m.tmux.branch
+
+	m.layout = newLayoutModel(m.theme, app.Config.Paths.Layouts, workdir, session, branch)
+	m.layout.embedded = true
+	colW := m.width / 3
+	if colW < 20 {
+		colW = 20
+	}
+	m.layout.width = m.width - colW - 2
+	m.layout.height = m.height - 2
+	m.list.SetSize(colW, m.height-2)
+	m.list.SetDelegate(m.makeDimDelegate())
+	m.state = stateLayout
+	return m, nil
+}
+
+func (m pickerModel) updateLayout(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	updated, cmd := m.layout.Update(msg)
+	m.layout = updated.(layoutModel)
+
+	if m.layout.wantsBack {
+		m.layout.wantsBack = false
+		return m.enterBrowseState()
+	}
+
+	if m.layout.quitting {
+		m.quitting = true
+		m.action = "layout-action"
+		return m, tea.Quit
+	}
+
+	return m, cmd
+}
+
+func (m pickerModel) updateBranch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	updated, cmd := m.branch.Update(msg)
+	m.branch = updated.(branchModel)
+
+	if m.branch.wantsBack {
+		m.branch.wantsBack = false
+		return m.enterBrowseState()
+	}
+
+	if m.branch.quitting {
+		m.quitting = true
+		m.action = "branch-action"
+		return m, tea.Quit
+	}
+
 	return m, cmd
 }
 
@@ -504,20 +825,14 @@ func (m pickerModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if repo == nil {
 			return m, nil
 		}
-		m.selected = repo
-		m.action = "branch"
-		m.quitting = true
-		return m, tea.Quit
+		return m.enterBranchState(repo)
 
 	case key.Matches(msg, extraKeys.Layout):
 		repo := m.selectedRepo()
 		if repo == nil {
 			return m, nil
 		}
-		m.selected = repo
-		m.action = "layout"
-		m.quitting = true
-		return m, tea.Quit
+		return m.enterLayoutState(repo)
 
 	case key.Matches(msg, extraKeys.Delete):
 		repo := m.selectedRepo()
@@ -528,6 +843,12 @@ func (m pickerModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			exec.Command("tmux", "kill-session", "-t", repo.Name).Run()
 		}
 		return m, nil
+
+	case key.Matches(msg, extraKeys.Todo):
+		return m.enterTodoState()
+
+	case key.Matches(msg, extraKeys.Agents):
+		return m.enterAgentState()
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("right"))):
 		repo := m.selectedRepo()
@@ -562,34 +883,13 @@ func (m pickerModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m pickerModel) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("left", "esc"))):
-		m.state = stateBrowse
 		m.detailRepo = nil
-		m.list.SetSize(m.width, m.height-2)
-		restoreDelegate := list.NewDefaultDelegate()
-		restoreDelegate.SetSpacing(0)
-		restoreDelegate.Styles.SelectedTitle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color(m.theme.Blue)).Bold(true).
-			Border(lipgloss.NormalBorder(), false, false, false, true).
-			BorderForeground(lipgloss.Color(m.theme.Blue)).
-			Padding(0, 0, 0, 1)
-		restoreDelegate.Styles.SelectedDesc = lipgloss.NewStyle().
-			Foreground(lipgloss.Color(m.theme.Gray)).
-			Border(lipgloss.NormalBorder(), false, false, false, true).
-			BorderForeground(lipgloss.Color(m.theme.Blue)).
-			Padding(0, 0, 0, 1)
-		restoreDelegate.Styles.NormalTitle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color(m.theme.FG)).
-			Padding(0, 0, 0, 2)
-		restoreDelegate.Styles.NormalDesc = lipgloss.NewStyle().
-			Foreground(lipgloss.Color(m.theme.Gray)).
-			Padding(0, 0, 0, 2)
-		restoreDelegate.Styles.DimmedTitle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color(m.theme.Gray)).
-			Padding(0, 0, 0, 2)
-		restoreDelegate.Styles.DimmedDesc = lipgloss.NewStyle().
-			Foreground(lipgloss.Color(m.theme.Border)).
-			Padding(0, 0, 0, 2)
-		m.list.SetDelegate(restoreDelegate)
+		return m.enterBrowseState()
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("b"))):
+		if m.detailRepo != nil {
+			return m.enterBranchState(m.detailRepo)
+		}
 		return m, nil
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
@@ -637,6 +937,41 @@ func (m pickerModel) updateRestore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m pickerModel) updateTodo(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	updated, cmd := m.todo.Update(msg)
+	m.todo = updated.(todoModel)
+
+	if m.todo.wantsBack {
+		m.todo.wantsBack = false
+		return m.enterBrowseState()
+	}
+
+	if m.todo.quitting {
+		m.quitting = true
+		return m, tea.Quit
+	}
+
+	return m, cmd
+}
+
+func (m pickerModel) updateAgent(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	updated, cmd := m.agent.Update(msg)
+	m.agent = updated.(agentModel)
+
+	if m.agent.wantsBack {
+		m.agent.wantsBack = false
+		return m.enterBrowseState()
+	}
+
+	if m.agent.quitting {
+		m.quitting = true
+		m.action = "agent-jump"
+		return m, tea.Quit
+	}
+
+	return m, cmd
+}
+
 func (m pickerModel) View() string {
 	if m.quitting {
 		return ""
@@ -670,7 +1005,7 @@ func (m pickerModel) View() string {
 		help := lipgloss.NewStyle().
 			Foreground(lipgloss.Color(m.theme.Gray)).
 			Padding(0, 2).
-			Render("↵ select  ← back  esc back")
+			Render("↵ select  b branch  ← back  esc back")
 
 		showPreview := m.width >= 80 && m.preview != "" && m.detailRepo != nil && m.detailRepo.HasSession
 		if !showPreview {
@@ -711,10 +1046,83 @@ func (m pickerModel) View() string {
 		return columns + "\n" + help
 	}
 
+	if m.state == stateTodo {
+		sepHeight := m.height - 3
+		if sepHeight < 1 {
+			sepHeight = 1
+		}
+		sep := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(m.theme.Border)).
+			Render(strings.Repeat("│\n", sepHeight))
+
+		left := m.list.View()
+		agentSection := m.renderAgentSection(m.height/3, true)
+		right := m.todo.View()
+		if agentSection != "" {
+			right += "\n" + agentSection
+		}
+
+		columns := lipgloss.JoinHorizontal(lipgloss.Top, left, sep, right)
+		return columns
+	}
+
+	if m.state == stateAgent {
+		sepHeight := m.height - 3
+		if sepHeight < 1 {
+			sepHeight = 1
+		}
+		sep := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(m.theme.Border)).
+			Render(strings.Repeat("│\n", sepHeight))
+
+		left := m.list.View()
+		todoSection := m.renderTodoSection(m.height/3, true)
+		right := ""
+		if todoSection != "" {
+			right = todoSection + "\n"
+		}
+		right += m.agent.View()
+
+		columns := lipgloss.JoinHorizontal(lipgloss.Top, left, sep, right)
+		return columns
+	}
+
+	if m.state == stateBranch {
+		sepHeight := m.height - 3
+		if sepHeight < 1 {
+			sepHeight = 1
+		}
+		sep := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(m.theme.Border)).
+			Render(strings.Repeat("│\n", sepHeight))
+
+		left := m.list.View()
+		right := m.branch.View()
+
+		columns := lipgloss.JoinHorizontal(lipgloss.Top, left, sep, right)
+		return columns
+	}
+
+	if m.state == stateLayout {
+		sepHeight := m.height - 3
+		if sepHeight < 1 {
+			sepHeight = 1
+		}
+		sep := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(m.theme.Border)).
+			Render(strings.Repeat("│\n", sepHeight))
+
+		left := m.list.View()
+		right := m.layout.View()
+
+		columns := lipgloss.JoinHorizontal(lipgloss.Top, left, sep, right)
+		return columns
+	}
+
 	help := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(m.theme.Gray)).
 		Padding(0, 2).
-		Render("↵ open  → details  b branch  l layout  n new  d delete  / filter  esc quit")
+		Render("↵ open  → details  b branch  l layout  t todo  g agents  n new  d delete  / filter  esc quit")
 
 	isFiltering := m.list.FilterState() == list.Filtering || m.list.FilterState() == list.FilterApplied
 	dashboard := m.renderDashboard()
@@ -734,67 +1142,203 @@ func (m pickerModel) View() string {
 	return columns + "\n" + help
 }
 
-func (m pickerModel) renderDashboard() string {
-	if len(m.todoGroups) == 0 || m.width < 60 {
+func (m pickerModel) dashW() int {
+	return m.width - m.width/2 - 2
+}
+
+func (m pickerModel) renderTodoSection(maxH int, dimmed ...bool) string {
+	if len(m.todoGroups) == 0 {
 		return ""
 	}
+	isDimmed := len(dimmed) > 0 && dimmed[0]
+	dashW := m.dashW()
+	var lines []string
 
-	dashW := m.width - m.width/2 - 2
-	if dashW < 20 {
-		return ""
+	titleColor := m.theme.Blue
+	if isDimmed {
+		titleColor = m.theme.Gray
 	}
-
 	title := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color(m.theme.Blue)).
+		Foreground(lipgloss.Color(titleColor)).
 		Padding(0, 1).
-		Render(fmt.Sprintf("todos (%d)", todos.ActiveCount(m.todoGroups)))
-
-	maxH := m.height - 5
-	var lines []string
+		Render(fmt.Sprintf("todos (%d)", todos.RepoActiveCount(m.todoGroups)))
 	lines = append(lines, title)
 	lines = append(lines, "")
 
-	for _, g := range m.todoGroups {
-		if len(g.Active) == 0 {
+	for _, rg := range m.todoGroups {
+		hasActive := false
+		for _, wt := range rg.Worktrees {
+			if len(wt.Active) > 0 {
+				hasActive = true
+				break
+			}
+		}
+		if !hasActive {
 			continue
 		}
 		if len(lines) >= maxH {
 			break
 		}
 
-		header := lipgloss.NewStyle().
-			Foreground(lipgloss.Color(m.theme.Purple)).
-			Bold(true).
-			Render(g.Name)
+		headerColor := m.theme.Purple
+		doneColor := m.theme.Gray
+		wtColor := m.theme.Cyan
+		bulletColor := m.theme.Yellow
+		textColor := m.theme.FG
+		if isDimmed {
+			headerColor = m.theme.Gray
+			doneColor = m.theme.Border
+			wtColor = m.theme.Border
+			bulletColor = m.theme.Border
+			textColor = m.theme.Gray
+		}
 
-		if g.Done > 0 {
+		header := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(headerColor)).
+			Bold(!isDimmed).
+			Render(rg.Name)
+		if rg.DoneTotal > 0 {
 			header += lipgloss.NewStyle().
-				Foreground(lipgloss.Color(m.theme.Gray)).
-				Render(fmt.Sprintf(" +%d done", g.Done))
+				Foreground(lipgloss.Color(doneColor)).
+				Render(fmt.Sprintf(" +%d done", rg.DoneTotal))
 		}
 		lines = append(lines, "  "+header)
 
-		for _, t := range g.Active {
+		multiWT := len(rg.Worktrees) > 1
+		for _, wt := range rg.Worktrees {
+			if len(wt.Active) == 0 {
+				continue
+			}
 			if len(lines) >= maxH {
 				break
 			}
-			bullet := lipgloss.NewStyle().
-				Foreground(lipgloss.Color(m.theme.Yellow)).
-				Render("○")
-			text := t.Text
-			if len(text) > dashW-6 {
-				text = text[:dashW-9] + "..."
+			if multiWT || wt.Name != "" {
+				wtLabel := lipgloss.NewStyle().
+					Foreground(lipgloss.Color(wtColor)).
+					Render(wt.Name)
+				lines = append(lines, "    "+wtLabel)
 			}
-			todoLine := lipgloss.NewStyle().
-				Foreground(lipgloss.Color(m.theme.FG)).
-				Render(text)
-			lines = append(lines, "    "+bullet+" "+todoLine)
+			for _, t := range wt.Active {
+				if len(lines) >= maxH {
+					break
+				}
+				bullet := lipgloss.NewStyle().
+					Foreground(lipgloss.Color(bulletColor)).
+					Render("○")
+				text := t.Text
+				indent := "      "
+				cutoff := dashW - 10
+				if !multiWT && wt.Name == "" {
+					indent = "    "
+					cutoff = dashW - 6
+				}
+				if len(text) > cutoff {
+					text = text[:cutoff-3] + "..."
+				}
+				todoLine := lipgloss.NewStyle().
+					Foreground(lipgloss.Color(textColor)).
+					Render(text)
+				lines = append(lines, indent+bullet+" "+todoLine)
+			}
 		}
 		lines = append(lines, "")
 	}
-
 	return strings.Join(lines, "\n")
+}
+
+func (m pickerModel) renderAgentSection(maxH int, dimmed ...bool) string {
+	if len(m.agentList) == 0 {
+		return ""
+	}
+	isDimmed := len(dimmed) > 0 && dimmed[0]
+	dashW := m.dashW()
+	var lines []string
+
+	running, waiting, idle := agents.CountByStatus(m.agentList)
+	var counts []string
+	if running > 0 {
+		counts = append(counts, fmt.Sprintf("%d running", running))
+	}
+	if waiting > 0 {
+		counts = append(counts, fmt.Sprintf("%d waiting", waiting))
+	}
+	if idle > 0 {
+		counts = append(counts, fmt.Sprintf("%d idle", idle))
+	}
+	titleColor := m.theme.Blue
+	if isDimmed {
+		titleColor = m.theme.Gray
+	}
+	agentTitle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color(titleColor)).
+		Padding(0, 1).
+		Render(fmt.Sprintf("agents (%s)", strings.Join(counts, ", ")))
+	lines = append(lines, agentTitle)
+	lines = append(lines, "")
+
+	for _, a := range m.agentList {
+		if len(lines) >= maxH {
+			break
+		}
+		var icon string
+		if isDimmed {
+			icon = lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Border)).Render("○")
+		} else {
+			switch a.Status {
+			case agents.StatusRunning:
+				icon = lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Green)).Render("◑")
+			case agents.StatusWaiting:
+				icon = lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Yellow)).Render("●")
+			case agents.StatusIdle:
+				icon = lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Gray)).Render("○")
+			}
+		}
+
+		branch := a.Branch
+		if len(branch) > 20 {
+			branch = branch[:17] + "..."
+		}
+
+		label := fmt.Sprintf("%s/%s", a.Session, a.WindowName)
+		if len(label) > dashW-28 {
+			label = label[:dashW-31] + "..."
+		}
+
+		textColor := m.theme.FG
+		labelColor := m.theme.Purple
+		if isDimmed {
+			textColor = m.theme.Gray
+			labelColor = m.theme.Gray
+		}
+		sessionStr := lipgloss.NewStyle().Foreground(lipgloss.Color(labelColor)).Render(label)
+		branchStr := lipgloss.NewStyle().Foreground(lipgloss.Color(textColor)).Render(branch)
+		lines = append(lines, fmt.Sprintf("  %s %s  %s", icon, branchStr, sessionStr))
+	}
+	lines = append(lines, "")
+	return strings.Join(lines, "\n")
+}
+
+func (m pickerModel) renderDashboard() string {
+	hasTodos := len(m.todoGroups) > 0
+	hasAgents := len(m.agentList) > 0
+	if (!hasTodos && !hasAgents) || m.width < 60 || m.dashW() < 20 {
+		return ""
+	}
+	maxH := m.height - 5
+	todoSection := m.renderTodoSection(maxH)
+	todoLines := strings.Count(todoSection, "\n") + 1
+	agentSection := m.renderAgentSection(maxH - todoLines)
+
+	var parts []string
+	if todoSection != "" {
+		parts = append(parts, todoSection)
+	}
+	if agentSection != "" {
+		parts = append(parts, agentSection)
+	}
+	return strings.Join(parts, "\n")
 }
 
 func runPicker() {
@@ -806,6 +1350,7 @@ func runPicker() {
 	todoGroups := todos.Load(cfg.Paths.State)
 
 	m := newPicker(repos, t, recentList)
+	m.tmux = detectTmuxContext()
 	m.todoGroups = todoGroups
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	result, err := p.Run()
@@ -815,6 +1360,22 @@ func runPicker() {
 	}
 
 	final := result.(pickerModel)
+
+	if final.action == "agent-jump" {
+		handleAgentDeferred(final.agent)
+		return
+	}
+
+	if final.action == "branch-action" {
+		handleBranchDeferred(final.branch)
+		return
+	}
+
+	if final.action == "layout-action" {
+		handleLayoutDeferred(final.layout)
+		return
+	}
+
 	if final.selected == nil {
 		return
 	}

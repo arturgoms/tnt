@@ -10,9 +10,10 @@ import (
 )
 
 var (
-	Version = "dev"
-	cfgPath string
-	app     *tui.App
+	Version  = "dev"
+	cfgPath  string
+	todoFlag bool
+	app      *tui.App
 )
 
 var rootCmd = &cobra.Command{
@@ -27,12 +28,17 @@ var rootCmd = &cobra.Command{
 		return nil
 	},
 	Run: func(cmd *cobra.Command, args []string) {
+		if todoFlag {
+			runTodo()
+			return
+		}
 		runPicker()
 	},
 }
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgPath, "config", "", "config file (default: ~/.config/dotflow/tnt/config.toml)")
+	rootCmd.Flags().BoolVar(&todoFlag, "todo", false, "open todo manager")
 
 	planCmd.AddCommand(planUpdateCmd)
 	planCmd.AddCommand(planOpenCmd)
@@ -80,7 +86,7 @@ var branchCmd = &cobra.Command{
 	Use:   "branch",
 	Short: "Branch/worktree picker",
 	Run: func(cmd *cobra.Command, args []string) {
-		stub("branch")
+		runBranchPicker()
 	},
 }
 
@@ -117,7 +123,7 @@ var agentCmd = &cobra.Command{
 	Use:   "agent",
 	Short: "Agent roster and management",
 	Run: func(cmd *cobra.Command, args []string) {
-		stub("agent roster")
+		runAgentRoster()
 	},
 }
 
@@ -157,7 +163,7 @@ var layoutCmd = &cobra.Command{
 	Use:   "layout",
 	Short: "Layout picker",
 	Run: func(cmd *cobra.Command, args []string) {
-		stub("layout")
+		runLayoutPicker()
 	},
 }
 
@@ -165,7 +171,7 @@ var todoCmd = &cobra.Command{
 	Use:   "todo",
 	Short: "Todo manager",
 	Run: func(cmd *cobra.Command, args []string) {
-		stub("todo")
+		runTodo()
 	},
 }
 
