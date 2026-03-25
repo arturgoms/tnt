@@ -31,21 +31,33 @@ func (r repoItem) Title() string {
 	if r.divider {
 		return "──────────"
 	}
-	badge := ""
 	if r.repo.HasSession {
-		badge = "  ●"
+		return r.repo.Name + "  ●"
 	}
-	if r.repo.SavedWindows > 0 {
-		badge += fmt.Sprintf("  [%d saved]", r.repo.SavedWindows)
-	}
-	return r.repo.Name + badge
+	return r.repo.Name
 }
 
 func (r repoItem) Description() string {
 	if r.divider {
 		return ""
 	}
-	return r.repo.Group
+	if r.repo.HasSession {
+		return r.repo.Group
+	}
+
+	var parts []string
+	if r.repo.SavedWindows > 0 {
+		parts = append(parts, fmt.Sprintf("%d saved", r.repo.SavedWindows))
+	}
+	if r.repo.BranchCount > 1 {
+		parts = append(parts, fmt.Sprintf("%d branches", r.repo.BranchCount))
+	} else if r.repo.CurrentBranch != "" {
+		parts = append(parts, r.repo.CurrentBranch)
+	}
+	if r.repo.LastActivity != "" {
+		parts = append(parts, r.repo.LastActivity)
+	}
+	return strings.Join(parts, " · ")
 }
 
 func (r repoItem) FilterValue() string {

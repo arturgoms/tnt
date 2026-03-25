@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -11,12 +12,15 @@ import (
 )
 
 type Repo struct {
-	Name         string
-	Path         string
-	Group        string
-	Workspace    string
-	HasSession   bool
-	SavedWindows int
+	Name          string
+	Path          string
+	Group         string
+	Workspace     string
+	HasSession    bool
+	SavedWindows  int
+	BranchCount   int
+	LastActivity  string
+	CurrentBranch string
 }
 
 func Scan(cfg *config.Config) []Repo {
@@ -78,13 +82,17 @@ func scanDir(dir, workspace string, cfg *config.Config, seen map[string]bool, se
 		seen[real] = true
 
 		name := sessionName(entry.Name())
+		branch, bc, la := repoGitInfo(real)
 		*repos = append(*repos, Repo{
-			Name:         name,
-			Path:         real,
-			Group:        group,
-			Workspace:    workspace,
-			HasSession:   sessions[name],
-			SavedWindows: countSavedWindows(cfg, name),
+			Name:          name,
+			Path:          real,
+			Group:         group,
+			Workspace:     workspace,
+			HasSession:    sessions[name],
+			SavedWindows:  countSavedWindows(cfg, name),
+			BranchCount:   bc,
+			LastActivity:  la,
+			CurrentBranch: branch,
 		})
 	}
 }
@@ -114,13 +122,17 @@ func scanNested(dir, group, workspace string, depth int, seen map[string]bool, s
 		}
 		seen[real] = true
 		name := sessionName(entry.Name())
+		branch, bc, la := repoGitInfo(real)
 		*repos = append(*repos, Repo{
-			Name:         name,
-			Path:         real,
-			Group:        group,
-			Workspace:    workspace,
-			HasSession:   sessions[name],
-			SavedWindows: countSavedWindows(cfg, name),
+			Name:          name,
+			Path:          real,
+			Group:         group,
+			Workspace:     workspace,
+			HasSession:    sessions[name],
+			SavedWindows:  countSavedWindows(cfg, name),
+			BranchCount:   bc,
+			LastActivity:  la,
+			CurrentBranch: branch,
 		})
 	}
 }
@@ -171,6 +183,31 @@ func groupName(dir string) string {
 		return parts[len(parts)-1]
 	}
 	return rel
+}
+
+func repoGitInfo(path string) (branch string, branchCount int, lastActivity string) {
+	if out, err := exec.Command("git", "-C", path, "branch", "--show-current").Output(); err == nil {
+		branch = strings.TrimSpace(string(out))
+	}
+	if branch == "" {
+		branch = "main"
+	}
+
+	branchCount = 1
+	wtDir := filepath.Join(path, ".worktrees")
+	if entries, err := os.ReadDir(wtDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				branchCount++
+			}
+		}
+	}
+
+	if out, err := exec.Command("git", "-C", path, "log", "-1", "--all", "--format=%cr").Output(); err == nil {
+		lastActivity = strings.TrimSpace(string(out))
+	}
+
+	return
 }
 
 func WorkspaceNames(cfg *config.Config) []string {
