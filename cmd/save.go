@@ -27,5 +27,5 @@ var saveCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.AddCommand(saveCmd)
+	sessionCmd.AddCommand(saveCmd)
 }
