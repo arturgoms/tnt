@@ -23,12 +23,14 @@ const (
 )
 
 type Pane struct {
-	Type        PaneType `json:"type"`
-	Cwd         string   `json:"cwd"`
-	Command     string   `json:"command,omitempty"`
-	Socket      string   `json:"socket,omitempty"`
-	NvimSocket  string   `json:"nvim_socket,omitempty"`
-	SessionFile string   `json:"session_file,omitempty"`
+	Type            PaneType `json:"type"`
+	Cwd             string   `json:"cwd"`
+	Command         string   `json:"command,omitempty"`
+	Socket          string   `json:"socket,omitempty"`
+	NvimSocket      string   `json:"nvim_socket,omitempty"`
+	SessionFile     string   `json:"session_file,omitempty"`
+	OpencodeSession string   `json:"opencode_session,omitempty"`
+	OpencodeExport  string   `json:"opencode_export,omitempty"`
 }
 
 type Window struct {
@@ -148,11 +150,19 @@ func capturePanes(windowID string, cfg *config.Config, sessionName string) []Pan
 		case cmd == "opencode":
 			pane.Type = PaneOpencode
 			pane.NvimSocket = detectEnvVar(pid, "NVIM_SOCKET_PATH")
+			pane.OpencodeSession = detectOpencodeSession(pid)
+			if pane.OpencodeSession != "" {
+				pane.OpencodeExport = exportOpencodeSession(pane.OpencodeSession, cfg, sessionName)
+			}
 
 		default:
 			if isOpencode(pid) {
 				pane.Type = PaneOpencode
 				pane.NvimSocket = detectEnvVar(pid, "NVIM_SOCKET_PATH")
+				pane.OpencodeSession = detectOpencodeSession(pid)
+				if pane.OpencodeSession != "" {
+					pane.OpencodeExport = exportOpencodeSession(pane.OpencodeSession, cfg, sessionName)
+				}
 			} else {
 				pane.Type = PaneShell
 			}
@@ -252,6 +262,51 @@ func saveNvimSession(paneID, socket string, cfg *config.Config, sessionName stri
 	return ""
 }
 
+func detectOpencodeSession(panePid string) string {
+	pids := []string{panePid}
+	children, err := exec.Command("pgrep", "-P", panePid).Output()
+	if err == nil {
+		pids = append(pids, strings.Fields(string(children))...)
+	}
+	for _, cp := range strings.Fields(string(children)) {
+		grandchildren, err := exec.Command("pgrep", "-P", cp).Output()
+		if err == nil {
+			pids = append(pids, strings.Fields(string(grandchildren))...)
+		}
+	}
+
+	for _, p := range pids {
+		out, err := exec.Command("ps", "-o", "args=", "-p", p).Output()
+		if err != nil {
+			continue
+		}
+		args := strings.Fields(string(out))
+		for i, arg := range args {
+			if (arg == "-s" || arg == "--session") && i+1 < len(args) {
+				return args[i+1]
+			}
+		}
+	}
+	return ""
+}
+
+func exportOpencodeSession(sessionID string, cfg *config.Config, tmuxSession string) string {
+	exportDir := filepath.Join(cfg.Paths.Projects, tmuxSession, "opencode-sessions")
+	os.MkdirAll(exportDir, 0755)
+
+	exportPath := filepath.Join(exportDir, sessionID+".json")
+
+	out, err := exec.Command("opencode", "export", sessionID).Output()
+	if err != nil || len(out) == 0 {
+		return ""
+	}
+
+	if err := os.WriteFile(exportPath, out, 0644); err != nil {
+		return ""
+	}
+	return exportPath
+}
+
 func isOpencode(pid string) bool {
 	out, err := exec.Command("pgrep", "-P", pid, "-f", "opencode").Output()
 	return err == nil && strings.TrimSpace(string(out)) != ""
@@ -343,11 +398,7 @@ func restoreWithPanes(cfg *config.Config, sessionName string, w Window, workdir 
 
 		switch p.Type {
 		case PaneNvim:
-			sock := socketPath
-			if p.Socket != "" {
-				sock = p.Socket
-			}
-			nvimCmd := fmt.Sprintf("nvim --listen '%s'", sock)
+			nvimCmd := fmt.Sprintf("nvim --listen '%s'", socketPath)
 			if p.SessionFile != "" {
 				if _, err := os.Stat(p.SessionFile); err == nil {
 					nvimCmd += fmt.Sprintf(" -S '%s'", p.SessionFile)
@@ -358,11 +409,20 @@ func restoreWithPanes(cfg *config.Config, sessionName string, w Window, workdir 
 			exec.Command("tmux", "send-keys", "-t", paneID, nvimCmd, "Enter").Run()
 
 		case PaneOpencode:
-			nvimSock := socketPath
-			if p.NvimSocket != "" {
-				nvimSock = p.NvimSocket
+			ocCmd := fmt.Sprintf("NVIM_SOCKET_PATH='%s' opencode --port", socketPath)
+			if p.OpencodeExport != "" {
+				if _, err := os.Stat(p.OpencodeExport); err == nil {
+					importOut, err := exec.Command("opencode", "import", p.OpencodeExport).Output()
+					if err == nil {
+						imported := strings.TrimSpace(string(importOut))
+						if imported != "" {
+							ocCmd = fmt.Sprintf("NVIM_SOCKET_PATH='%s' opencode --port -s %s", socketPath, imported)
+						}
+					}
+				}
+			} else if p.OpencodeSession != "" {
+				ocCmd = fmt.Sprintf("NVIM_SOCKET_PATH='%s' opencode --port -s %s", socketPath, p.OpencodeSession)
 			}
-			ocCmd := fmt.Sprintf("NVIM_SOCKET_PATH='%s' opencode", nvimSock)
 			exec.Command("tmux", "send-keys", "-t", paneID, ocCmd, "Enter").Run()
 
 		case PaneShell:
