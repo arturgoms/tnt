@@ -19,6 +19,7 @@ type Config struct {
 
 type PathsConfig struct {
 	Plans    string `toml:"plans"`
+	Skills   string `toml:"skills"`
 	State    string `toml:"state"`
 	Layouts  string `toml:"layouts"`
 	Projects string `toml:"projects"`
