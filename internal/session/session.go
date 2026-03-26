@@ -251,6 +251,8 @@ func saveNvimSession(paneID, socket string, cfg *config.Config, sessionName stri
 	sessFile := filepath.Join(sessDir, strings.TrimSuffix(socketBase, ".sock")+".vim")
 
 	exec.Command("tmux", "send-keys", "-t", paneID, "Escape", "Escape").Run()
+	exec.Command("tmux", "send-keys", "-t", paneID, ":Neotree close", "Enter").Run()
+	time.Sleep(100 * time.Millisecond)
 	exec.Command("tmux", "send-keys", "-t", paneID,
 		fmt.Sprintf(":mksession! %s", sessFile), "Enter").Run()
 
