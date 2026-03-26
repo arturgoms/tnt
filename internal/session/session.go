@@ -150,7 +150,7 @@ func capturePanes(windowID string, cfg *config.Config, sessionName string) []Pan
 		case cmd == "opencode":
 			pane.Type = PaneOpencode
 			pane.NvimSocket = detectEnvVar(pid, "NVIM_SOCKET_PATH")
-			pane.OpencodeSession = detectOpencodeSession(pid)
+			pane.OpencodeSession = detectOpencodeSession(pid, cwd)
 			if pane.OpencodeSession != "" {
 				pane.OpencodeExport = exportOpencodeSession(pane.OpencodeSession, cfg, sessionName)
 			}
@@ -159,7 +159,7 @@ func capturePanes(windowID string, cfg *config.Config, sessionName string) []Pan
 			if isOpencode(pid) {
 				pane.Type = PaneOpencode
 				pane.NvimSocket = detectEnvVar(pid, "NVIM_SOCKET_PATH")
-				pane.OpencodeSession = detectOpencodeSession(pid)
+				pane.OpencodeSession = detectOpencodeSession(pid, cwd)
 				if pane.OpencodeSession != "" {
 					pane.OpencodeExport = exportOpencodeSession(pane.OpencodeSession, cfg, sessionName)
 				}
@@ -262,7 +262,7 @@ func saveNvimSession(paneID, socket string, cfg *config.Config, sessionName stri
 	return ""
 }
 
-func detectOpencodeSession(panePid string) string {
+func detectOpencodeSession(panePid string, cwd string) string {
 	pids := []string{panePid}
 	children, err := exec.Command("pgrep", "-P", panePid).Output()
 	if err == nil {
@@ -287,6 +287,35 @@ func detectOpencodeSession(panePid string) string {
 			}
 		}
 	}
+
+	if cwd != "" {
+		dbPath := filepath.Join(os.Getenv("HOME"), ".local", "share", "opencode", "opencode.db")
+		dirs := []string{cwd}
+		if gitRoot, err := exec.Command("git", "-C", cwd, "rev-parse", "--show-toplevel").Output(); err == nil {
+			root := strings.TrimSpace(string(gitRoot))
+			if root != cwd {
+				dirs = append(dirs, root)
+			}
+		}
+		if gc, err := exec.Command("git", "-C", cwd, "rev-parse", "--git-common-dir").Output(); err == nil {
+			gcStr := strings.TrimSpace(string(gc))
+			if gcStr != ".git" {
+				mainRoot := filepath.Dir(gcStr)
+				dirs = append(dirs, mainRoot)
+			}
+		}
+		for _, dir := range dirs {
+			out, err := exec.Command("sqlite3", dbPath,
+				fmt.Sprintf("SELECT id FROM session WHERE directory='%s' ORDER BY time_updated DESC LIMIT 1", dir)).Output()
+			if err == nil {
+				sid := strings.TrimSpace(string(out))
+				if sid != "" {
+					return sid
+				}
+			}
+		}
+	}
+
 	return ""
 }
 
