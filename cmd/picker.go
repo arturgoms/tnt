@@ -562,7 +562,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.layout.width = msg.Width - colW - 2
 			m.layout.height = msg.Height - 2
 		} else if len(m.todoGroups) > 0 && msg.Width >= 60 {
-			m.list.SetSize(msg.Width/3, msg.Height-2)
+			m.list.SetSize(msg.Width*2/5, msg.Height-2)
 		} else {
 			m.list.SetSize(msg.Width, msg.Height-2)
 		}
@@ -571,7 +571,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentsLoadedMsg:
 		m.agentList = msg.list
 		if m.state == stateBrowse && len(m.agentList) > 0 && m.width >= 60 {
-			m.list.SetSize(m.width/3, m.height-2)
+			m.list.SetSize(m.width*2/5, m.height-2)
 		}
 		return m, nil
 
@@ -803,7 +803,7 @@ func (m pickerModel) enterAgentState() (tea.Model, tea.Cmd) {
 func (m pickerModel) enterBrowseState() (tea.Model, tea.Cmd) {
 	m.state = stateBrowse
 	if (len(m.todoGroups) > 0 || len(m.agentList) > 0) && m.width >= 60 {
-		m.list.SetSize(m.width/3, m.height-2)
+		m.list.SetSize(m.width*2/5, m.height-2)
 	} else {
 		m.list.SetSize(m.width, m.height-2)
 	}
@@ -1074,7 +1074,7 @@ func (m pickerModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
 		if m.list.FilterState() == list.FilterApplied {
 			if len(m.todoGroups) > 0 && m.width >= 60 {
-				m.list.SetSize(m.width/3, m.height-2)
+				m.list.SetSize(m.width*2/5, m.height-2)
 			}
 			var cmd tea.Cmd
 			m.list, cmd = m.list.Update(msg)
@@ -1405,7 +1405,7 @@ func (m pickerModel) View() string {
 }
 
 func (m pickerModel) dashW() int {
-	return m.width - m.width/3 - 2
+	return m.width - m.width*2/5 - 2
 }
 
 func (m pickerModel) renderTodoSection(maxH int, dimmed ...bool) string {
