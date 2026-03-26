@@ -562,7 +562,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.layout.width = msg.Width - colW - 2
 			m.layout.height = msg.Height - 2
 		} else if len(m.todoGroups) > 0 && msg.Width >= 60 {
-			m.list.SetSize(msg.Width/2, msg.Height-2)
+			m.list.SetSize(msg.Width/3, msg.Height-2)
 		} else {
 			m.list.SetSize(msg.Width, msg.Height-2)
 		}
@@ -571,7 +571,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentsLoadedMsg:
 		m.agentList = msg.list
 		if m.state == stateBrowse && len(m.agentList) > 0 && m.width >= 60 {
-			m.list.SetSize(m.width/2, m.height-2)
+			m.list.SetSize(m.width/3, m.height-2)
 		}
 		return m, nil
 
@@ -803,7 +803,7 @@ func (m pickerModel) enterAgentState() (tea.Model, tea.Cmd) {
 func (m pickerModel) enterBrowseState() (tea.Model, tea.Cmd) {
 	m.state = stateBrowse
 	if (len(m.todoGroups) > 0 || len(m.agentList) > 0) && m.width >= 60 {
-		m.list.SetSize(m.width/2, m.height-2)
+		m.list.SetSize(m.width/3, m.height-2)
 	} else {
 		m.list.SetSize(m.width, m.height-2)
 	}
@@ -1074,7 +1074,7 @@ func (m pickerModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
 		if m.list.FilterState() == list.FilterApplied {
 			if len(m.todoGroups) > 0 && m.width >= 60 {
-				m.list.SetSize(m.width/2, m.height-2)
+				m.list.SetSize(m.width/3, m.height-2)
 			}
 			var cmd tea.Cmd
 			m.list, cmd = m.list.Update(msg)
@@ -1405,7 +1405,7 @@ func (m pickerModel) View() string {
 }
 
 func (m pickerModel) dashW() int {
-	return m.width - m.width/2 - 2
+	return m.width - m.width/3 - 2
 }
 
 func (m pickerModel) renderTodoSection(maxH int, dimmed ...bool) string {
@@ -1544,39 +1544,34 @@ func (m pickerModel) renderAgentSection(maxH int, dimmed ...bool) string {
 		if len(lines) >= maxH {
 			break
 		}
-		var icon string
-		if isDimmed {
-			icon = lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Border)).Render("○")
-		} else {
-			switch a.Status {
-			case agents.StatusRunning:
-				icon = lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Green)).Render("◑")
-			case agents.StatusWaiting:
-				icon = lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Yellow)).Render("●")
-			case agents.StatusIdle:
-				icon = lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Gray)).Render("○")
-			}
-		}
-
-		branch := a.Branch
-		if len(branch) > 20 {
-			branch = branch[:17] + "..."
+		var icon, statusLabel string
+		switch a.Status {
+		case agents.StatusRunning:
+			icon = lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Green)).Render("◑")
+			statusLabel = lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Green)).Width(8).Render("running")
+		case agents.StatusWaiting:
+			icon = lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Yellow)).Render("●")
+			statusLabel = lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Yellow)).Width(8).Render("waiting")
+		case agents.StatusIdle:
+			icon = lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Gray)).Render("○")
+			statusLabel = lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Gray)).Width(8).Render("idle")
 		}
 
 		label := fmt.Sprintf("%s/%s", a.Session, a.WindowName)
-		if len(label) > dashW-28 {
-			label = label[:dashW-31] + "..."
+		maxLabel := dashW - 14
+		if maxLabel < 15 {
+			maxLabel = 15
+		}
+		if len(label) > maxLabel {
+			label = label[:maxLabel-3] + "..."
 		}
 
 		textColor := m.theme.FG
-		labelColor := m.theme.Purple
 		if isDimmed {
 			textColor = m.theme.Gray
-			labelColor = m.theme.Gray
 		}
-		sessionStr := lipgloss.NewStyle().Foreground(lipgloss.Color(labelColor)).Render(label)
-		branchStr := lipgloss.NewStyle().Foreground(lipgloss.Color(textColor)).Render(branch)
-		lines = append(lines, fmt.Sprintf("  %s %s  %s", icon, branchStr, sessionStr))
+		labelStr := lipgloss.NewStyle().Foreground(lipgloss.Color(textColor)).Render(label)
+		lines = append(lines, fmt.Sprintf("  %s %s %s", icon, statusLabel, labelStr))
 	}
 	lines = append(lines, "")
 	return strings.Join(lines, "\n")
