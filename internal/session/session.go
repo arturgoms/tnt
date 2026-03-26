@@ -439,17 +439,7 @@ func restoreWithPanes(cfg *config.Config, sessionName string, w Window, workdir 
 
 		case PaneOpencode:
 			ocCmd := fmt.Sprintf("NVIM_SOCKET_PATH='%s' opencode --port", socketPath)
-			if p.OpencodeExport != "" {
-				if _, err := os.Stat(p.OpencodeExport); err == nil {
-					importOut, err := exec.Command("opencode", "import", p.OpencodeExport).Output()
-					if err == nil {
-						imported := strings.TrimSpace(string(importOut))
-						if imported != "" {
-							ocCmd = fmt.Sprintf("NVIM_SOCKET_PATH='%s' opencode --port -s %s", socketPath, imported)
-						}
-					}
-				}
-			} else if p.OpencodeSession != "" {
+			if p.OpencodeSession != "" {
 				ocCmd = fmt.Sprintf("NVIM_SOCKET_PATH='%s' opencode --port -s %s", socketPath, p.OpencodeSession)
 			}
 			exec.Command("tmux", "send-keys", "-t", paneID, ocCmd, "Enter").Run()
