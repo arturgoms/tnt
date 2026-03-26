@@ -30,7 +30,7 @@ type repoItem struct {
 
 func (r repoItem) Title() string {
 	if r.divider {
-		return "──────────"
+		return strings.Repeat("─", 80)
 	}
 	if r.repo.HasSession {
 		return r.repo.Name + "  ●"
@@ -40,7 +40,7 @@ func (r repoItem) Title() string {
 
 func (r repoItem) Description() string {
 	if r.divider {
-		return ""
+		return " "
 	}
 	if r.repo.HasSession {
 		sessionType := "git"

@@ -49,12 +49,15 @@ func Scan(cfg *config.Config) []Repo {
 			continue
 		}
 		path := sessionPath(name)
+		group, workspace := resolveWorkspace(path, cfg)
+		isLite := !isGitRepo(path)
 		repos = append(repos, Repo{
 			Name:       name,
 			Path:       path,
-			Group:      "other",
+			Group:      group,
+			Workspace:  workspace,
 			HasSession: true,
-			Lite:       true,
+			Lite:       isLite,
 		})
 	}
 
@@ -266,6 +269,17 @@ func timeAgo(t time.Time) string {
 		}
 		return fmt.Sprintf("%d weeks ago", weeks)
 	}
+}
+
+func resolveWorkspace(path string, cfg *config.Config) (group, workspace string) {
+	for _, ws := range cfg.Workspaces {
+		for _, dir := range ws.Dirs {
+			if strings.HasPrefix(path, dir) {
+				return ws.Name, ws.Name
+			}
+		}
+	}
+	return groupName(filepath.Dir(path)), ""
 }
 
 func sessionPath(name string) string {
