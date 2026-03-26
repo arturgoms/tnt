@@ -40,9 +40,6 @@ func runSessionKill(args []string) {
 		os.Exit(1)
 	}
 
-	session.Save(cfg, target)
-	fmt.Printf("Saved session %q\n", target)
-
 	if target == current {
 		recentList := recents.Load(cfg.Paths.State)
 		next := ""
@@ -69,10 +66,9 @@ func runSessionKill(args []string) {
 
 		if next != "" {
 			exec.Command("tmux", "switch-client", "-t", next).Run()
-			fmt.Printf("Switched to %q\n", next)
 		}
 	}
 
+	session.Save(cfg, target)
 	exec.Command("tmux", "kill-session", "-t", target).Run()
-	fmt.Printf("Killed session %q\n", target)
 }
