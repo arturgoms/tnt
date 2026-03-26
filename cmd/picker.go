@@ -561,7 +561,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.list.SetSize(colW, msg.Height-2)
 			m.layout.width = msg.Width - colW - 2
 			m.layout.height = msg.Height - 2
-		} else if len(m.todoGroups) > 0 && msg.Width >= 60 {
+		} else if (len(m.todoGroups) > 0 || len(m.agentList) > 0) && msg.Width >= 60 {
 			m.list.SetSize(msg.Width*2/5, msg.Height-2)
 		} else {
 			m.list.SetSize(msg.Width, msg.Height-2)
