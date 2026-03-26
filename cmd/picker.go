@@ -24,13 +24,18 @@ import (
 )
 
 type repoItem struct {
-	repo    scanner.Repo
-	divider bool
+	repo         scanner.Repo
+	divider      bool
+	dividerWidth int
 }
 
 func (r repoItem) Title() string {
 	if r.divider {
-		return strings.Repeat("─", 40)
+		w := r.dividerWidth
+		if w <= 0 {
+			w = 40
+		}
+		return strings.Repeat("─", w)
 	}
 	if r.repo.HasSession {
 		return r.repo.Name + "  ●"
@@ -710,7 +715,7 @@ func (m pickerModel) rebuildListItems() []list.Item {
 		items = append(items, repoItem{repo: r})
 	}
 	if len(activeRepos) > 0 && len(inactiveRepos) > 0 {
-		items = append(items, repoItem{divider: true})
+		items = append(items, repoItem{divider: true, dividerWidth: m.width/4 - 4})
 	}
 	for _, r := range inactiveRepos {
 		items = append(items, repoItem{repo: r})
