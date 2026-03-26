@@ -18,6 +18,7 @@ import (
 	"github.com/arturgomes/tnt/internal/worktree"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -42,7 +43,11 @@ func (r repoItem) Description() string {
 		return ""
 	}
 	if r.repo.HasSession {
-		return r.repo.Group
+		sessionType := "git"
+		if r.repo.Lite {
+			sessionType = "lite"
+		}
+		return sessionType + " · " + r.repo.Group
 	}
 
 	var parts []string
@@ -77,6 +82,8 @@ const (
 	stateAgent
 	stateBranch
 	stateLayout
+	stateNewSession
+	stateNewSessionGit
 )
 
 type detailItem struct {
@@ -208,30 +215,32 @@ func (c tmuxContext) resolveWorkdir(repoPath string) string {
 }
 
 type pickerModel struct {
-	list           list.Model
-	detailList     list.Model
-	detailRepo     *scanner.Repo
-	preview        string
-	lastPane       string
-	tmux           tmuxContext
-	allRepos       []scanner.Repo
-	recentList     *recents.List
-	currentSession string
-	workspaceNames []string
-	workspace      string
-	todoGroups     []todos.RepoGroup
-	agentList      []agents.Agent
-	todo           todoModel
-	agent          agentModel
-	branch         branchModel
-	layout         layoutModel
-	theme          *theme.Theme
-	state          pickerState
-	selected       *scanner.Repo
-	action         string
-	quitting       bool
-	width          int
-	height         int
+	list            list.Model
+	detailList      list.Model
+	detailRepo      *scanner.Repo
+	preview         string
+	lastPane        string
+	tmux            tmuxContext
+	allRepos        []scanner.Repo
+	recentList      *recents.List
+	currentSession  string
+	workspaceNames  []string
+	workspace       string
+	todoGroups      []todos.RepoGroup
+	agentList       []agents.Agent
+	todo            todoModel
+	agent           agentModel
+	branch          branchModel
+	layout          layoutModel
+	theme           *theme.Theme
+	state           pickerState
+	selected        *scanner.Repo
+	action          string
+	quitting        bool
+	newSessionName  string
+	newSessionInput textinput.Model
+	width           int
+	height          int
 }
 
 type pickerKeys struct {
@@ -618,6 +627,10 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateBranch(msg)
 		case stateLayout:
 			return m.updateLayout(msg)
+		case stateNewSession:
+			return m.updateNewSession(msg)
+		case stateNewSessionGit:
+			return m.updateNewSessionGit(msg)
 		}
 	}
 
@@ -641,6 +654,8 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		updated, c := m.layout.Update(msg)
 		m.layout = updated.(layoutModel)
 		cmd = c
+	case stateNewSession:
+		m.newSessionInput, cmd = m.newSessionInput.Update(msg)
 	default:
 		m.list, cmd = m.list.Update(msg)
 	}
@@ -866,6 +881,87 @@ func (m pickerModel) updateBranch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m pickerModel) updateNewSession(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+		m.state = stateBrowse
+		return m, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+		name := strings.TrimSpace(m.newSessionInput.Value())
+		if name == "" {
+			m.state = stateBrowse
+			return m, nil
+		}
+		m.newSessionName = name
+		m.state = stateNewSessionGit
+		return m, nil
+	default:
+		var cmd tea.Cmd
+		m.newSessionInput, cmd = m.newSessionInput.Update(msg)
+		return m, cmd
+	}
+}
+
+func (m pickerModel) updateNewSessionGit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y":
+		m.action = "new-session-git"
+		m.quitting = true
+		return m, tea.Quit
+	case "n":
+		m.action = "new-session-lite"
+		m.quitting = true
+		return m, tea.Quit
+	case "esc":
+		m.state = stateBrowse
+		return m, nil
+	}
+	return m, nil
+}
+
+func handleNewSession(m pickerModel, cfg *config.Config) {
+	name := m.newSessionName
+	isGit := m.action == "new-session-git"
+
+	wsDir := ""
+	for _, ws := range cfg.Workspaces {
+		if ws.Name == m.workspace {
+			if len(ws.Dirs) > 0 {
+				wsDir = ws.Dirs[0]
+			}
+			break
+		}
+	}
+	if wsDir == "" && len(cfg.Workspaces) > 0 {
+		wsDir = cfg.Workspaces[0].Dirs[0]
+	}
+	if wsDir == "" {
+		wsDir = os.Getenv("HOME")
+	}
+
+	projectDir := filepath.Join(wsDir, name)
+	os.MkdirAll(projectDir, 0755)
+
+	if isGit {
+		exec.Command("git", "-C", projectDir, "init").Run()
+	}
+
+	sessionName := strings.ReplaceAll(name, ".", "_")
+	exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", projectDir).Run()
+
+	layout := "terminal"
+	if isGit {
+		layout = "dev"
+	}
+	layoutScript := filepath.Join(cfg.Paths.Layouts, layout+".sh")
+	if info, err := os.Stat(layoutScript); err == nil && info.Mode()&0111 != 0 {
+		exec.Command(layoutScript, projectDir, sessionName, "main").Run()
+		exec.Command("tmux", "kill-window", "-t", sessionName+":1").Run()
+	}
+
+	exec.Command("tmux", "switch-client", "-t", sessionName).Run()
+}
+
 func (m pickerModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
@@ -886,14 +982,18 @@ func (m pickerModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case key.Matches(msg, extraKeys.New):
-		repo := m.selectedRepo()
-		if repo == nil {
-			return m, nil
+		ti := textinput.New()
+		ti.CharLimit = 60
+		ti.Width = 40
+		wsLabel := m.workspace
+		if wsLabel == "" {
+			wsLabel = "default"
 		}
-		repo.SavedWindows = 0
-		m.selected = repo
-		m.quitting = true
-		return m, tea.Quit
+		ti.Placeholder = fmt.Sprintf("session name (%s)", wsLabel)
+		ti.Focus()
+		m.newSessionInput = ti
+		m.state = stateNewSession
+		return m, textinput.Blink
 
 	case key.Matches(msg, extraKeys.Branch):
 		repo := m.selectedRepo()
@@ -1101,6 +1201,55 @@ func (m pickerModel) View() string {
 			Render("  [r]estore  [n]ew session  [esc] cancel\n")
 
 		return prompt + keys
+	}
+
+	if m.state == stateNewSession {
+		header := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color(m.theme.Blue)).
+			Padding(1, 2).
+			Render("New session")
+
+		wsLabel := m.workspace
+		if wsLabel == "" {
+			wsLabel = "all workspaces"
+		}
+		sub := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(m.theme.Gray)).
+			Padding(0, 2).
+			Render(fmt.Sprintf("workspace: %s", wsLabel))
+
+		input := lipgloss.NewStyle().
+			Padding(1, 2).
+			Render(m.newSessionInput.View())
+
+		help := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(m.theme.Gray)).
+			Padding(0, 2).
+			Render("enter confirm  esc cancel")
+
+		return header + "\n" + sub + "\n" + input + "\n" + help
+	}
+
+	if m.state == stateNewSessionGit {
+		header := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color(m.theme.Blue)).
+			Padding(1, 2).
+			Render(fmt.Sprintf("Create session: %s", m.newSessionName))
+
+		prompt := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color(m.theme.Yellow)).
+			Padding(1, 2).
+			Render("Initialize git repository?")
+
+		help := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(m.theme.Gray)).
+			Padding(0, 2).
+			Render("[y]es (dev layout)  [n]o (terminal layout)  esc cancel")
+
+		return header + "\n" + prompt + "\n" + help
 	}
 
 	if m.state == stateDetail {
@@ -1490,6 +1639,11 @@ func runPicker() {
 
 	if final.action == "branch-action" {
 		handleBranchDeferred(final.branch)
+		return
+	}
+
+	if final.action == "new-session-git" || final.action == "new-session-lite" {
+		handleNewSession(final, cfg)
 		return
 	}
 

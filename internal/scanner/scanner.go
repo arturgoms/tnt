@@ -18,6 +18,7 @@ type Repo struct {
 	Group         string
 	Workspace     string
 	HasSession    bool
+	Lite          bool
 	SavedWindows  int
 	BranchCount   int
 	LastActivity  string
@@ -37,6 +38,24 @@ func Scan(cfg *config.Config) []Repo {
 
 	for _, dir := range cfg.Search.Dirs {
 		scanDir(dir, "", cfg, seen, sessions, &repos)
+	}
+
+	knownSessions := map[string]bool{}
+	for _, r := range repos {
+		knownSessions[r.Name] = true
+	}
+	for name := range sessions {
+		if knownSessions[name] {
+			continue
+		}
+		path := sessionPath(name)
+		repos = append(repos, Repo{
+			Name:       name,
+			Path:       path,
+			Group:      "other",
+			HasSession: true,
+			Lite:       true,
+		})
 	}
 
 	sort.Slice(repos, func(i, j int) bool {
@@ -247,6 +266,14 @@ func timeAgo(t time.Time) string {
 		}
 		return fmt.Sprintf("%d weeks ago", weeks)
 	}
+}
+
+func sessionPath(name string) string {
+	out, err := tmux.Run("display-message", "-t", name, "-p", "#{session_path}")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
 }
 
 func WorkspaceNames(cfg *config.Config) []string {
