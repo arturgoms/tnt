@@ -172,7 +172,8 @@ func CreateWorktree(ctx RepoContext, branchName string) (string, error) {
 		if !refExists(ctx.GitRoot, "refs/heads/main") {
 			baseBranch = "master"
 		}
-		err := exec.Command("git", "-C", ctx.GitRoot, "worktree", "add", "-b", branchName, wtPath, baseBranch).Run()
+		exec.Command("git", "-C", ctx.GitRoot, "fetch", "origin", baseBranch, "--quiet").Run()
+		err := exec.Command("git", "-C", ctx.GitRoot, "worktree", "add", "-b", branchName, wtPath, "origin/"+baseBranch).Run()
 		if err != nil {
 			return "", fmt.Errorf("failed to create worktree: %w", err)
 		}
