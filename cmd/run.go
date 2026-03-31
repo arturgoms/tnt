@@ -138,6 +138,9 @@ func runStartServices(session, workdir, branch, projectsDir, repoName string) {
 			if cfg.Env != "" {
 				exec.Command("tmux", "send-keys", "-t", pane, cfg.Env, "Enter").Run()
 			}
+			for _, setupCmd := range svc.Setup {
+				exec.Command("tmux", "send-keys", "-t", pane, setupCmd, "Enter").Run()
+			}
 			exec.Command("tmux", "send-keys", "-t", pane, svc.Run, "Enter").Run()
 		} else {
 			out, err := exec.Command("tmux", "split-window", "-t", wid, "-h", "-c", svcDir, "-P", "-F", "#{pane_id}").Output()
@@ -148,6 +151,9 @@ func runStartServices(session, workdir, branch, projectsDir, repoName string) {
 			time.Sleep(300 * time.Millisecond)
 			if cfg.Env != "" {
 				exec.Command("tmux", "send-keys", "-t", paneID, cfg.Env, "Enter").Run()
+			}
+			for _, setupCmd := range svc.Setup {
+				exec.Command("tmux", "send-keys", "-t", paneID, setupCmd, "Enter").Run()
 			}
 			exec.Command("tmux", "send-keys", "-t", paneID, svc.Run, "Enter").Run()
 		}
