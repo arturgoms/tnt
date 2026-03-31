@@ -1,15 +1,20 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/arturgomes/tnt/internal/agents"
 	"github.com/arturgomes/tnt/internal/config"
+	"github.com/arturgomes/tnt/internal/linear"
+	"github.com/arturgomes/tnt/internal/plans"
+	"github.com/arturgomes/tnt/internal/prs"
 	"github.com/arturgomes/tnt/internal/recents"
 	"github.com/arturgomes/tnt/internal/scanner"
 	"github.com/arturgomes/tnt/internal/session"
@@ -83,13 +88,17 @@ const (
 	stateBrowse pickerState = iota
 	stateRestore
 	stateDetail
-	stateTodo
-	stateAgent
+	stateRepoContext
+	stateOverview
 	stateBranch
 	stateLayout
 	stateNewSession
 	stateNewSessionGit
 )
+
+const prCacheTTL = 60 * time.Second
+const reviewPRCacheTTL = 60 * time.Second
+const linearCacheTTL = 120 * time.Second
 
 type detailItem struct {
 	name   string
@@ -220,32 +229,58 @@ func (c tmuxContext) resolveWorkdir(repoPath string) string {
 }
 
 type pickerModel struct {
-	list            list.Model
-	detailList      list.Model
-	detailRepo      *scanner.Repo
-	preview         string
-	lastPane        string
-	tmux            tmuxContext
-	allRepos        []scanner.Repo
-	recentList      *recents.List
-	currentSession  string
-	workspaceNames  []string
-	workspace       string
-	todoGroups      []todos.RepoGroup
-	agentList       []agents.Agent
-	todo            todoModel
-	agent           agentModel
-	branch          branchModel
-	layout          layoutModel
-	theme           *theme.Theme
-	state           pickerState
-	selected        *scanner.Repo
-	action          string
-	quitting        bool
-	newSessionName  string
-	newSessionInput textinput.Model
-	width           int
-	height          int
+	list              list.Model
+	detailList        list.Model
+	detailRepo        *scanner.Repo
+	preview           string
+	lastPane          string
+	tmux              tmuxContext
+	allRepos          []scanner.Repo
+	recentList        *recents.List
+	currentSession    string
+	workspaceNames    []string
+	workspace         string
+	todoGroups        []todos.RepoGroup
+	agentList         []agents.Agent
+	planList          []plans.BranchProgress
+	planRepo          string
+	planCache         map[string][]plans.BranchProgress
+	pr                prModel
+	prList            []prs.PR
+	prReviewList      []prs.PR
+	prRepo            string
+	prLoading         bool
+	prLoadedAt        time.Time
+	prCache           map[string][]prs.PR
+	prLoadingSet      map[string]bool
+	linearIssues      []linear.IssueWithWorktrees
+	linearLoaded      bool
+	linearLoading     bool
+	linearLoadedAt    time.Time
+	linearAPIKey      string
+	linearCursor      int
+	reviewPRs         []prs.PR
+	reviewPRsLoaded   bool
+	reviewPRsCursor   int
+	reviewPRsLoading  bool
+	reviewPRsLoadedAt time.Time
+	tasksDir          string
+	todo              todoModel
+	agent             agentModel
+	plan              planModel
+	repoContextFocus  int
+	overviewFocus     int
+	branch            branchModel
+	layout            layoutModel
+	theme             *theme.Theme
+	state             pickerState
+	selected          *scanner.Repo
+	action            string
+	quitting          bool
+	newSessionName    string
+	newSessionInput   textinput.Model
+	width             int
+	height            int
 }
 
 type pickerKeys struct {
@@ -255,6 +290,7 @@ type pickerKeys struct {
 	Delete    key.Binding
 	Todo      key.Binding
 	Agents    key.Binding
+	Plans     key.Binding
 	Workspace key.Binding
 }
 
@@ -265,18 +301,21 @@ var extraKeys = pickerKeys{
 	Delete:    key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
 	Todo:      key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "todo")),
 	Agents:    key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "agents")),
+	Plans:     key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "plans")),
 	Workspace: key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "workspace")),
 }
 
 func newPicker(repos []scanner.Repo, t *theme.Theme, recentList *recents.List) pickerModel {
 	var activeRepos, inactiveRepos []scanner.Repo
+	var currentRepo *scanner.Repo
 
-	// Current session name — exclude from list so position 0 is the switch target
 	currentSession, _ := exec.Command("tmux", "display-message", "-p", "#S").Output()
 	current := strings.TrimSpace(string(currentSession))
 
 	for _, r := range repos {
 		if r.Name == current {
+			rc := r
+			currentRepo = &rc
 			continue
 		}
 		if r.HasSession {
@@ -300,10 +339,16 @@ func newPicker(repos []scanner.Repo, t *theme.Theme, recentList *recents.List) p
 	})
 
 	var items []list.Item
-	for _, r := range activeRepos {
-		items = append(items, repoItem{repo: r})
+	if len(activeRepos) > 0 {
+		items = append(items, repoItem{repo: activeRepos[0]})
 	}
-	if len(activeRepos) > 0 && len(inactiveRepos) > 0 {
+	if currentRepo != nil {
+		items = append(items, repoItem{repo: *currentRepo})
+	}
+	for i := 1; i < len(activeRepos); i++ {
+		items = append(items, repoItem{repo: activeRepos[i]})
+	}
+	if (currentRepo != nil || len(activeRepos) > 0) && len(inactiveRepos) > 0 {
 		items = append(items, repoItem{divider: true})
 	}
 	for _, r := range inactiveRepos {
@@ -365,12 +410,108 @@ type agentsLoadedMsg struct {
 	list []agents.Agent
 }
 
+type prsLoadedMsg struct {
+	mine     []prs.PR
+	review   []prs.PR
+	repoName string
+}
+
+type reviewPRsLoadedMsg struct {
+	list []prs.PR
+}
+
+type linearLoadedMsg struct {
+	issues []linear.IssueWithWorktrees
+}
+
 func loadAgentsCmd() tea.Msg {
 	return agentsLoadedMsg{list: agents.Detect("")}
 }
 
+func loadPRsCmd(repoName, repoPath string) tea.Cmd {
+	return func() tea.Msg {
+		mine, _ := prs.LoadForRepo(repoPath)
+		review, _ := prs.LoadReviewRequested(repoPath)
+		return prsLoadedMsg{mine: mine, review: review, repoName: repoName}
+	}
+}
+
+func loadReviewPRsCmd(repoPath string) tea.Cmd {
+	return func() tea.Msg {
+		list, _ := prs.LoadReviewRequested(repoPath)
+		return reviewPRsLoadedMsg{list: list}
+	}
+}
+
+func loadLinearCmd(apiKey string, repos []scanner.Repo) tea.Cmd {
+	return func() tea.Msg {
+		issues, err := linear.LoadMyIssues(apiKey)
+		if err != nil || len(issues) == 0 {
+			return linearLoadedMsg{issues: nil}
+		}
+		matched := linear.MatchWorktrees(issues, buildLinearRepoInfos(repos))
+		return linearLoadedMsg{issues: matched}
+	}
+}
+
+func buildLinearRepoInfos(repos []scanner.Repo) []linear.RepoInfo {
+	infos := make([]linear.RepoInfo, 0, len(repos))
+	for _, r := range repos {
+		if r.Path == "" {
+			continue
+		}
+		infos = append(infos, linear.RepoInfo{
+			Name:     r.Name,
+			Path:     r.Path,
+			Branches: listWorktreeBranches(r.Path),
+		})
+	}
+	return infos
+}
+
+func listWorktreeBranches(repoPath string) []string {
+	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+
+	seen := map[string]bool{}
+	branches := []string{}
+	s := bufio.NewScanner(strings.NewReader(string(out)))
+	for s.Scan() {
+		line := strings.TrimSpace(s.Text())
+		if !strings.HasPrefix(line, "branch refs/heads/") {
+			continue
+		}
+		branch := strings.TrimPrefix(line, "branch refs/heads/")
+		if branch == "" || seen[branch] {
+			continue
+		}
+		seen[branch] = true
+		branches = append(branches, branch)
+	}
+	return branches
+}
+
 func (m pickerModel) Init() tea.Cmd {
-	return loadAgentsCmd
+	var cmds []tea.Cmd
+	cmds = append(cmds, loadAgentsCmd)
+	for _, r := range m.allRepos {
+		if r.Path != "" {
+			cmds = append(cmds, loadReviewPRsCmd(r.Path))
+			break
+		}
+	}
+	if repo := m.selectedRepo(); repo != nil && repo.Path != "" {
+		cmds = append(cmds, loadPRsCmd(repo.Name, repo.Path))
+	}
+	if m.linearAPIKey != "" {
+		m.linearLoading = true
+		cmds = append(cmds, loadLinearCmd(m.linearAPIKey, m.allRepos))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m pickerModel) selectedRepo() *scanner.Repo {
@@ -534,22 +675,6 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.list.SetSize(colW, msg.Height-2)
 			m.detailList.SetSize(colW, msg.Height-2)
-		} else if m.state == stateTodo {
-			colW := msg.Width / 3
-			if colW < 20 {
-				colW = 20
-			}
-			m.list.SetSize(colW, msg.Height-2)
-			m.todo.width = msg.Width - colW - 2
-			m.todo.height = msg.Height - 2
-		} else if m.state == stateAgent {
-			colW := msg.Width / 3
-			if colW < 20 {
-				colW = 20
-			}
-			m.list.SetSize(colW, msg.Height-2)
-			m.agent.width = msg.Width - colW - 2
-			m.agent.height = msg.Height - 2
 		} else if m.state == stateBranch {
 			colW := msg.Width / 3
 			if colW < 20 {
@@ -566,18 +691,14 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.list.SetSize(colW, msg.Height-2)
 			m.layout.width = msg.Width - colW - 2
 			m.layout.height = msg.Height - 2
-		} else if (len(m.todoGroups) > 0 || len(m.agentList) > 0) && msg.Width >= 60 {
-			m.list.SetSize(msg.Width/4, msg.Height-2)
 		} else {
-			m.list.SetSize(msg.Width, msg.Height-2)
+			m = m.applyMainLayoutSizing()
 		}
 		return m, nil
 
 	case agentsLoadedMsg:
 		m.agentList = msg.list
-		if m.state == stateBrowse && len(m.agentList) > 0 && m.width >= 60 {
-			m.list.SetSize(m.width/4, m.height-2)
-		}
+		m = m.applyMainLayoutSizing()
 		return m, nil
 
 	case agentRefreshMsg:
@@ -588,6 +709,113 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.agent.cursor < 0 {
 			m.agent.cursor = 0
+		}
+		return m, nil
+
+	case planRefreshMsg:
+		m.planList = msg.list
+		m.plan.plans = msg.list
+		if m.plan.cursor >= len(m.plan.plans) {
+			m.plan.cursor = len(m.plan.plans) - 1
+		}
+		if m.plan.cursor < 0 {
+			m.plan.cursor = 0
+		}
+		return m, nil
+
+	case prsLoadedMsg:
+		if m.prCache == nil {
+			m.prCache = map[string][]prs.PR{}
+		}
+		if m.prLoadingSet == nil {
+			m.prLoadingSet = map[string]bool{}
+		}
+		m.prCache[msg.repoName] = msg.mine
+		delete(m.prLoadingSet, msg.repoName)
+
+		repo := m.selectedRepo()
+		if repo != nil && repo.Name == msg.repoName {
+			m.prRepo = msg.repoName
+			m.prList = msg.mine
+			m.prReviewList = msg.review
+			m.pr.prs = msg.mine
+			m.pr.reviewPRs = msg.review
+			m.pr.rebuildRows()
+			if m.pr.cursor >= len(m.pr.allRows) {
+				m.pr.cursor = len(m.pr.allRows) - 1
+			}
+			if m.pr.cursor < 0 {
+				m.pr.cursor = 0
+			}
+		}
+		return m, nil
+
+	case reviewPRsLoadedMsg:
+		m.reviewPRs = msg.list
+		m.reviewPRsLoaded = true
+		m.reviewPRsLoading = false
+		m.reviewPRsLoadedAt = time.Now()
+		if m.reviewPRsCursor >= len(m.reviewPRs) {
+			m.reviewPRsCursor = len(m.reviewPRs) - 1
+		}
+		if m.reviewPRsCursor < 0 {
+			m.reviewPRsCursor = 0
+		}
+		m.reviewPRsCursor = m.clampGithubCursor(m.reviewPRsCursor)
+		if m.reviewPRsCursor >= len(m.reviewPRs) {
+			m.linearCursor = m.reviewPRsCursor - len(m.reviewPRs)
+		}
+		return m, nil
+
+	case linearLoadedMsg:
+		m.linearIssues = msg.issues
+		m.linearLoaded = true
+		m.linearLoading = false
+		m.linearLoadedAt = time.Now()
+		m.reviewPRsCursor = m.clampGithubCursor(m.reviewPRsCursor)
+		if m.reviewPRsCursor >= len(m.reviewPRs) {
+			m.linearCursor = m.reviewPRsCursor - len(m.reviewPRs)
+		}
+		if m.linearCursor >= len(m.linearIssues) {
+			m.linearCursor = len(m.linearIssues) - 1
+		}
+		if m.linearCursor < 0 {
+			m.linearCursor = 0
+		}
+		return m, nil
+
+	case prChecksLoadedMsg:
+		for i := range m.pr.prs {
+			if m.pr.prs[i].Number == msg.number {
+				m.pr.prs[i].Checks = msg.checks
+				break
+			}
+		}
+		for i := range m.prList {
+			if m.prList[i].Number == msg.number {
+				m.prList[i].Checks = msg.checks
+				break
+			}
+		}
+		m.pr.rebuildRows()
+		return m, nil
+
+	case prRefreshMsg:
+		m.prList = msg.mine
+		m.prReviewList = msg.review
+		m.pr.prs = msg.mine
+		m.pr.reviewPRs = msg.review
+		m.pr.rebuildRows()
+		if repo := m.selectedRepo(); repo != nil {
+			m.prRepo = repo.Name
+		}
+		m.prLoadedAt = time.Now()
+		m.prLoading = false
+		if m.pr.cursor >= len(m.pr.prs) {
+			m.pr.cursor = len(m.pr.prs) - 1
+		}
+		if m.pr.cursor < 0 {
+			m.pr.cursor = 0
 		}
 		return m, nil
 
@@ -606,13 +834,10 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key.Matches(msg, key.NewBinding(key.WithKeys("tab"))) && m.state != stateRestore && m.state != stateDetail {
 			switch m.state {
 			case stateBrowse:
-				return m.enterTodoState()
-			case stateTodo:
-				if m.todo.state != todoList {
-					break
-				}
-				return m.enterAgentState()
-			case stateAgent:
+				return m.enterRepoContextState(0)
+			case stateRepoContext:
+				return m.enterOverviewState(0)
+			case stateOverview:
 				return m.enterBrowseState()
 			}
 		}
@@ -624,10 +849,10 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateRestore(msg)
 		case stateDetail:
 			return m.updateDetail(msg)
-		case stateTodo:
-			return m.updateTodo(msg)
-		case stateAgent:
-			return m.updateAgent(msg)
+		case stateRepoContext:
+			return m.updateRepoContext(msg)
+		case stateOverview:
+			return m.updateOverview(msg)
 		case stateBranch:
 			return m.updateBranch(msg)
 		case stateLayout:
@@ -643,14 +868,6 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.state {
 	case stateDetail:
 		m.detailList, cmd = m.detailList.Update(msg)
-	case stateTodo:
-		updated, c := m.todo.Update(msg)
-		m.todo = updated.(todoModel)
-		cmd = c
-	case stateAgent:
-		updated, c := m.agent.Update(msg)
-		m.agent = updated.(agentModel)
-		cmd = c
 	case stateBranch:
 		updated, c := m.branch.Update(msg)
 		m.branch = updated.(branchModel)
@@ -687,8 +904,11 @@ func (m pickerModel) nextSession() string {
 
 func (m pickerModel) rebuildListItems() []list.Item {
 	var activeRepos, inactiveRepos []scanner.Repo
+	var currentRepo *scanner.Repo
 	for _, r := range m.allRepos {
 		if r.Name == m.currentSession {
+			rc := r
+			currentRepo = &rc
 			continue
 		}
 		if r.HasSession {
@@ -711,10 +931,16 @@ func (m pickerModel) rebuildListItems() []list.Item {
 	})
 
 	var items []list.Item
-	for _, r := range activeRepos {
-		items = append(items, repoItem{repo: r})
+	if len(activeRepos) > 0 {
+		items = append(items, repoItem{repo: activeRepos[0]})
 	}
-	if len(activeRepos) > 0 && len(inactiveRepos) > 0 {
+	if currentRepo != nil {
+		items = append(items, repoItem{repo: *currentRepo})
+	}
+	for i := 1; i < len(activeRepos); i++ {
+		items = append(items, repoItem{repo: activeRepos[i]})
+	}
+	if (currentRepo != nil || len(activeRepos) > 0) && len(inactiveRepos) > 0 {
 		items = append(items, repoItem{divider: true, dividerWidth: m.width/4 - 4})
 	}
 	for _, r := range inactiveRepos {
@@ -773,48 +999,112 @@ func (m pickerModel) makeActiveDelegate() list.DefaultDelegate {
 	return d
 }
 
-func (m pickerModel) enterTodoState() (tea.Model, tea.Cmd) {
-	m.todo = newTodoModel(m.theme, app.Config.Paths.State)
-	m.todo.embedded = true
-	colW := m.width / 3
-	if colW < 20 {
-		colW = 20
+func (m pickerModel) computeMainColumnWidths() (int, int, int) {
+	if m.width < 80 {
+		return m.width, 0, 0
 	}
-	agentH := len(m.agentList) + 3
-	m.todo.width = m.width - colW - 2
-	m.todo.height = m.height - 2 - agentH
-	m.list.SetSize(colW, m.height-2)
-	m.list.SetDelegate(m.makeDimDelegate())
-	m.state = stateTodo
-	return m, nil
+	if m.width <= 120 {
+		col1 := m.width / 3
+		if col1 < 20 {
+			col1 = 20
+		}
+		col3 := m.width - col1 - 2
+		if col3 < 20 {
+			col3 = 20
+		}
+		return col1, 0, col3
+	}
+	col1 := m.width / 4
+	if col1 < 20 {
+		col1 = 20
+	}
+	remaining := m.width - col1 - 4
+	if remaining < 40 {
+		remaining = 40
+	}
+	col2 := (remaining * 37) / 75
+	col3 := remaining - col2
+	if col2 < 20 {
+		col2 = 20
+		col3 = remaining - col2
+	}
+	if col3 < 20 {
+		col3 = 20
+		col2 = remaining - col3
+	}
+	return col1, col2, col3
 }
 
-func (m pickerModel) enterAgentState() (tea.Model, tea.Cmd) {
+func (m pickerModel) applyMainLayoutSizing() pickerModel {
+	col1, _, _ := m.computeMainColumnWidths()
+	m.list.SetSize(col1, m.height-2)
+	if m.state == stateBrowse {
+		m.list.SetDelegate(m.makeActiveDelegate())
+	} else {
+		m.list.SetDelegate(m.makeDimDelegate())
+	}
+	return m
+}
+
+func (m pickerModel) enterRepoContextState(focus int) (tea.Model, tea.Cmd) {
+	m = m.ensurePlanCacheForSelected()
+	updated, prCmd := m.ensurePRCacheForSelected()
+	m = updated
+	if focus < 0 || focus > 2 {
+		focus = 0
+	}
+	m.repoContextFocus = focus
+	repo := m.selectedRepo()
+	repoName := ""
+	repoPath := ""
+	if repo != nil {
+		repoName = repo.Name
+		repoPath = repo.Path
+	}
+	m.plan = newPlanModelWithList(m.theme, m.planList, m.tasksDir, repoName)
+	m.plan.embedded = true
+	m.pr = newPRModelWithList(m.theme, m.prList, nil, repoPath)
+	m.pr.embedded = true
+	m.state = stateRepoContext
+	m = m.applyMainLayoutSizing()
+	return m, tea.Batch(m.plan.Init(), m.pr.Init(), prCmd)
+}
+
+func (m pickerModel) enterOverviewState(focus int) (tea.Model, tea.Cmd) {
+	m = m.ensurePlanCacheForSelected()
+	updated, prCmd := m.ensurePRCacheForSelected()
+	m = updated
+	if focus < 0 || focus > 2 {
+		focus = 0
+	}
+	m.overviewFocus = focus
+	m.todo = newTodoModel(m.theme, app.Config.Paths.State)
+	m.todo.embedded = true
 	m.agent = newAgentModelWithList(m.theme, m.agentList)
 	m.agent.embedded = true
-	colW := m.width / 3
-	if colW < 20 {
-		colW = 20
+	m.state = stateOverview
+	m = m.applyMainLayoutSizing()
+	cmds := []tea.Cmd{prCmd}
+	if cmd := m.ensureReviewPRCache(); cmd != nil {
+		cmds = append(cmds, cmd)
 	}
-	todoH := strings.Count(m.renderTodoSection(m.height/3), "\n") + 1
-	m.agent.width = m.width - colW - 2
-	m.agent.height = m.height - 2 - todoH
-	m.list.SetSize(colW, m.height-2)
-	m.list.SetDelegate(m.makeDimDelegate())
-	m.state = stateAgent
-	return m, nil
+	if cmd := m.ensureLinearCache(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	return m, tea.Batch(cmds...)
 }
 
 func (m pickerModel) enterBrowseState() (tea.Model, tea.Cmd) {
+	m = m.ensurePlanCacheForSelected()
+	updated, prCmd := m.ensurePRCacheForSelected()
+	m = updated
 	m.state = stateBrowse
-	if (len(m.todoGroups) > 0 || len(m.agentList) > 0) && m.width >= 60 {
-		m.list.SetSize(m.width/4, m.height-2)
-	} else {
-		m.list.SetSize(m.width, m.height-2)
-	}
-	m.list.SetDelegate(m.makeActiveDelegate())
+	m = m.applyMainLayoutSizing()
 	m.todoGroups = todos.Load(app.Config.Paths.State)
-	return m, nil
+	if cmd := m.ensureReviewPRCache(); cmd != nil {
+		return m, tea.Batch(prCmd, cmd)
+	}
+	return m, prCmd
 }
 
 func (m pickerModel) enterBranchState(repo *scanner.Repo) (tea.Model, tea.Cmd) {
@@ -1038,7 +1328,10 @@ func (m pickerModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.list.SetItems(m.rebuildListItems())
-		return m, nil
+		m = m.ensurePlanCacheForSelected()
+		updated, prCmd := m.ensurePRCacheForSelected()
+		m = updated
+		return m, prCmd
 
 	case key.Matches(msg, extraKeys.Workspace):
 		if len(m.workspaceNames) == 0 {
@@ -1060,13 +1353,19 @@ func (m pickerModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.list.Title = "tnt [" + lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Green)).Render(m.workspace) + "]"
 		}
 		m.list.SetItems(m.rebuildListItems())
-		return m, nil
+		m = m.ensurePlanCacheForSelected()
+		updated, prCmd := m.ensurePRCacheForSelected()
+		m = updated
+		return m, prCmd
 
 	case key.Matches(msg, extraKeys.Todo):
-		return m.enterTodoState()
+		return m.enterOverviewState(0)
 
 	case key.Matches(msg, extraKeys.Agents):
-		return m.enterAgentState()
+		return m.enterOverviewState(1)
+
+	case key.Matches(msg, extraKeys.Plans):
+		return m.enterRepoContextState(0)
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("right"))):
 		repo := m.selectedRepo()
@@ -1078,9 +1377,7 @@ func (m pickerModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
 		if m.list.FilterState() == list.FilterApplied {
-			if len(m.todoGroups) > 0 && m.width >= 60 {
-				m.list.SetSize(m.width/4, m.height-2)
-			}
+			m = m.applyMainLayoutSizing()
 			var cmd tea.Cmd
 			m.list, cmd = m.list.Update(msg)
 			return m, cmd
@@ -1095,6 +1392,12 @@ func (m pickerModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
+	m = m.ensurePlanCacheForSelected()
+	updated, prCmd := m.ensurePRCacheForSelected()
+	m = updated
+	if prCmd != nil {
+		return m, tea.Batch(cmd, prCmd)
+	}
 	return m, cmd
 }
 
@@ -1188,6 +1491,647 @@ func (m pickerModel) updateAgent(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, cmd
+}
+
+func (m pickerModel) updatePlan(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	updated, cmd := m.plan.Update(msg)
+	m.plan = updated.(planModel)
+
+	if m.plan.wantsBack {
+		m.plan.wantsBack = false
+		return m.enterBrowseState()
+	}
+
+	if m.plan.jumpTo != "" {
+		repo := m.selectedRepo()
+		if repo != nil {
+			m.selected = repo
+			m.action = "jump-window:" + m.plan.jumpTo
+			m.quitting = true
+			return m, tea.Quit
+		}
+	}
+
+	if m.plan.quitting {
+		m.quitting = true
+		return m, tea.Quit
+	}
+
+	return m, cmd
+}
+
+func (m pickerModel) updatePR(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	updated, cmd := m.pr.Update(msg)
+	m.pr = updated.(prModel)
+
+	if m.pr.wantsBack {
+		m.pr.wantsBack = false
+		return m.enterBrowseState()
+	}
+
+	if m.pr.jumpTo != "" {
+		repo := m.selectedRepo()
+		if repo != nil {
+			m.selected = repo
+			m.action = "jump-window:" + m.pr.jumpTo
+			m.quitting = true
+			return m, tea.Quit
+		}
+	}
+
+	if m.pr.quitting {
+		m.quitting = true
+		return m, tea.Quit
+	}
+
+	return m, cmd
+}
+
+func (m *pickerModel) ensureReviewPRCache() tea.Cmd {
+	if len(m.allRepos) == 0 {
+		return nil
+	}
+	if m.reviewPRsLoaded && !m.reviewPRsLoadedAt.IsZero() && time.Since(m.reviewPRsLoadedAt) < reviewPRCacheTTL {
+		return nil
+	}
+	if m.reviewPRsLoading {
+		return nil
+	}
+	for _, r := range m.allRepos {
+		if r.Path != "" {
+			m.reviewPRsLoading = true
+			return loadReviewPRsCmd(r.Path)
+		}
+	}
+	return nil
+}
+
+func (m *pickerModel) ensureLinearCache() tea.Cmd {
+	if m.linearAPIKey == "" {
+		return nil
+	}
+	if m.linearLoaded && !m.linearLoadedAt.IsZero() && time.Since(m.linearLoadedAt) < linearCacheTTL {
+		return nil
+	}
+	if m.linearLoading {
+		return nil
+	}
+	m.linearLoading = true
+	return loadLinearCmd(m.linearAPIKey, m.allRepos)
+}
+
+func (m pickerModel) updateRepoContext(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	nextFocus := func() {
+		m.repoContextFocus = (m.repoContextFocus + 1) % 3
+	}
+	prevFocus := func() {
+		m.repoContextFocus = (m.repoContextFocus + 2) % 3
+	}
+
+	if key.Matches(msg, key.NewBinding(key.WithKeys("esc"))) {
+		return m.enterBrowseState()
+	}
+	if key.Matches(msg, key.NewBinding(key.WithKeys("tab"))) {
+		nextFocus()
+		return m, nil
+	}
+
+	switch m.repoContextFocus {
+	case 0:
+		if key.Matches(msg, key.NewBinding(key.WithKeys("down"))) && (len(m.plan.plans) == 0 || m.plan.cursor >= len(m.plan.plans)-1) {
+			nextFocus()
+			return m, nil
+		}
+		if key.Matches(msg, key.NewBinding(key.WithKeys("up"))) && (len(m.plan.plans) == 0 || m.plan.cursor == 0) {
+			prevFocus()
+			return m, nil
+		}
+		updated, cmd := m.plan.Update(msg)
+		m.plan = updated.(planModel)
+		if m.plan.wantsBack {
+			m.plan.wantsBack = false
+			nextFocus()
+			return m, nil
+		}
+		if m.plan.jumpTo != "" {
+			repo := m.selectedRepo()
+			if repo != nil {
+				m.selected = repo
+				m.action = "jump-window:" + m.plan.jumpTo
+				m.quitting = true
+				return m, tea.Quit
+			}
+		}
+		return m, cmd
+	case 1:
+		lastPRIdx := len(m.pr.allRows) - 1
+		if key.Matches(msg, key.NewBinding(key.WithKeys("down"))) && (len(m.pr.allRows) == 0 || m.pr.cursor >= lastPRIdx) {
+			nextFocus()
+			return m, nil
+		}
+		if key.Matches(msg, key.NewBinding(key.WithKeys("up"))) && (len(m.pr.allRows) == 0 || m.pr.cursor == 0) {
+			prevFocus()
+			return m, nil
+		}
+		updated, cmd := m.pr.Update(msg)
+		m.pr = updated.(prModel)
+		if m.pr.wantsBack {
+			m.pr.wantsBack = false
+			nextFocus()
+			return m, nil
+		}
+		if m.pr.openPR > 0 {
+			repo := m.selectedRepo()
+			if repo != nil {
+				m.selected = repo
+				m.action = fmt.Sprintf("open-pr:%d", m.pr.openPR)
+				m.quitting = true
+				return m, tea.Quit
+			}
+		}
+		if m.pr.jumpTo != "" {
+			repo := m.selectedRepo()
+			if repo != nil {
+				m.selected = repo
+				m.action = "jump-window:" + m.pr.jumpTo
+				m.quitting = true
+				return m, tea.Quit
+			}
+		}
+		return m, cmd
+	default:
+		if key.Matches(msg, key.NewBinding(key.WithKeys("down"))) {
+			nextFocus()
+			return m, nil
+		}
+		if key.Matches(msg, key.NewBinding(key.WithKeys("up"))) {
+			prevFocus()
+			return m, nil
+		}
+		return m, nil
+	}
+}
+
+func (m pickerModel) updateOverview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	nextFocus := func() {
+		m.overviewFocus = (m.overviewFocus + 1) % 3
+	}
+	prevFocus := func() {
+		m.overviewFocus = (m.overviewFocus + 2) % 3
+	}
+
+	if key.Matches(msg, key.NewBinding(key.WithKeys("esc"))) {
+		return m.enterBrowseState()
+	}
+	if key.Matches(msg, key.NewBinding(key.WithKeys("tab"))) {
+		nextFocus()
+		return m, nil
+	}
+
+	switch m.overviewFocus {
+	case 0:
+		if key.Matches(msg, key.NewBinding(key.WithKeys("down"))) && (len(m.todo.rows) == 0 || m.todo.cursor >= len(m.todo.rows)-1) {
+			nextFocus()
+			return m, nil
+		}
+		if key.Matches(msg, key.NewBinding(key.WithKeys("up"))) && (len(m.todo.rows) == 0 || m.todo.cursor == 0) {
+			prevFocus()
+			return m, nil
+		}
+		updated, cmd := m.todo.Update(msg)
+		m.todo = updated.(todoModel)
+		if m.todo.wantsBack {
+			m.todo.wantsBack = false
+			nextFocus()
+			return m, nil
+		}
+		if m.todo.quitting {
+			m.quitting = true
+			return m, tea.Quit
+		}
+		return m, cmd
+	case 1:
+		if key.Matches(msg, key.NewBinding(key.WithKeys("down"))) && (len(m.agent.agents) == 0 || m.agent.cursor >= len(m.agent.agents)-1) {
+			nextFocus()
+			return m, nil
+		}
+		if key.Matches(msg, key.NewBinding(key.WithKeys("up"))) && (len(m.agent.agents) == 0 || m.agent.cursor == 0) {
+			prevFocus()
+			return m, nil
+		}
+		updated, cmd := m.agent.Update(msg)
+		m.agent = updated.(agentModel)
+		if m.agent.wantsBack {
+			m.agent.wantsBack = false
+			nextFocus()
+			return m, nil
+		}
+		if m.agent.quitting {
+			m.quitting = true
+			m.action = "agent-jump"
+			return m, tea.Quit
+		}
+		return m, cmd
+	default:
+		if key.Matches(msg, key.NewBinding(key.WithKeys("down"))) {
+			total := len(m.reviewPRs) + len(m.linearIssues)
+			if total == 0 || m.reviewPRsCursor >= total-1 {
+				nextFocus()
+				return m, nil
+			}
+			m.reviewPRsCursor = m.clampGithubCursor(m.reviewPRsCursor + 1)
+			if m.reviewPRsCursor >= len(m.reviewPRs) {
+				m.linearCursor = m.reviewPRsCursor - len(m.reviewPRs)
+			}
+			return m, nil
+		}
+		if key.Matches(msg, key.NewBinding(key.WithKeys("up"))) {
+			total := len(m.reviewPRs) + len(m.linearIssues)
+			if total == 0 || m.reviewPRsCursor <= 0 {
+				prevFocus()
+				return m, nil
+			}
+			m.reviewPRsCursor = m.clampGithubCursor(m.reviewPRsCursor - 1)
+			if m.reviewPRsCursor >= len(m.reviewPRs) {
+				m.linearCursor = m.reviewPRsCursor - len(m.reviewPRs)
+			}
+			return m, nil
+		}
+		if key.Matches(msg, key.NewBinding(key.WithKeys("enter"))) {
+			kind, idx := m.selectedGithubItem()
+			switch kind {
+			case "review":
+				selected := m.reviewPRs[idx]
+				if selected.Branch != "" {
+					repo := m.selectedRepo()
+					if repo != nil {
+						m.selected = repo
+						m.action = "jump-window:" + selected.Branch
+						m.quitting = true
+						return m, tea.Quit
+					}
+				}
+			case "linear":
+				selected := m.linearIssues[idx]
+				if selected.URL != "" {
+					m.action = "open-linear:" + selected.URL
+					m.quitting = true
+					return m, tea.Quit
+				}
+			}
+		}
+		if key.Matches(msg, key.NewBinding(key.WithKeys("w"))) {
+			kind, idx := m.selectedGithubItem()
+			if kind == "linear" {
+				m.action = "linear-work:" + m.linearIssues[idx].Identifier
+				m.quitting = true
+				return m, tea.Quit
+			}
+		}
+		return m, nil
+	}
+}
+
+func (m pickerModel) renderRepoColumn(width, height int, focused bool) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
+	sectionH := height / 3
+	if sectionH < 5 {
+		sectionH = 5
+	}
+	dimmed := m.state != stateBrowse && !focused
+	box := lipgloss.NewStyle().Width(width).Height(sectionH)
+
+	var parts []string
+	if focused && m.repoContextFocus == 0 {
+		plan := m.plan
+		plan.width = width
+		plan.height = sectionH
+		parts = append(parts, box.Render(plan.View()))
+	} else {
+		parts = append(parts, box.Render(m.renderPlanSection(sectionH, dimmed)))
+	}
+
+	if focused && m.repoContextFocus == 1 {
+		pr := m.pr
+		pr.width = width
+		pr.height = sectionH
+		parts = append(parts, box.Render(pr.View()))
+	} else {
+		parts = append(parts, box.Render(m.renderPRSection(sectionH, dimmed)))
+	}
+
+	parts = append(parts, box.Render(m.renderRepoGitSection(width, sectionH, focused && m.repoContextFocus == 2)))
+	return strings.Join(parts, "\n")
+}
+
+func (m pickerModel) renderRepoGitSection(width, maxH int, active bool) string {
+	if maxH < 3 {
+		maxH = 3
+	}
+	dimmed := m.state != stateBrowse && !active
+	titleColor := m.theme.Blue
+	textColor := m.theme.FG
+	if dimmed {
+		titleColor = m.theme.Gray
+		textColor = m.theme.Border
+	}
+	if active {
+		titleColor = m.theme.Blue
+		textColor = m.theme.FG
+	}
+
+	var lines []string
+	lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(titleColor)).Padding(0, 1).Render("git"))
+	lines = append(lines, "")
+
+	repo := m.selectedRepo()
+	if repo == nil {
+		lines = append(lines, "  "+lipgloss.NewStyle().Foreground(lipgloss.Color(textColor)).Render("no repo selected"))
+		return strings.Join(lines, "\n")
+	}
+
+	branch := repo.CurrentBranch
+	if branch == "" {
+		branch = "unknown"
+	}
+	lines = append(lines, "  "+lipgloss.NewStyle().Foreground(lipgloss.Color(textColor)).Render("branch: "+branch))
+	lines = append(lines, "  "+lipgloss.NewStyle().Foreground(lipgloss.Color(textColor)).Render(fmt.Sprintf("worktrees: %d", repo.BranchCount)))
+
+	if len(lines) > maxH {
+		lines = lines[:maxH]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m pickerModel) renderOverviewColumn(width, height int, focused bool) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
+	sectionH := height / 3
+	if sectionH < 5 {
+		sectionH = 5
+	}
+	dimmed := m.state != stateBrowse && !focused
+	box := lipgloss.NewStyle().Width(width).Height(sectionH)
+
+	var parts []string
+	if focused && m.overviewFocus == 0 {
+		todo := m.todo
+		todo.width = width
+		todo.height = sectionH
+		parts = append(parts, box.Render(todo.View()))
+	} else {
+		parts = append(parts, box.Render(m.renderTodoSection(sectionH, dimmed)))
+	}
+
+	if focused && m.overviewFocus == 1 {
+		agent := m.agent
+		agent.width = width
+		agent.height = sectionH
+		parts = append(parts, box.Render(agent.View()))
+	} else {
+		parts = append(parts, box.Render(m.renderAgentSection(sectionH, dimmed)))
+	}
+
+	parts = append(parts, box.Render(m.renderGithubSection(width, sectionH, focused && m.overviewFocus == 2)))
+	return strings.Join(parts, "\n")
+}
+
+func (m pickerModel) renderGithubSection(width, maxH int, active bool) string {
+	dimmed := m.state != stateBrowse && !active
+	titleColor := m.theme.Blue
+	textColor := m.theme.FG
+	if dimmed {
+		titleColor = m.theme.Gray
+		textColor = m.theme.Border
+	}
+	if active {
+		titleColor = m.theme.Blue
+		textColor = m.theme.FG
+	}
+
+	var lines []string
+	lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(titleColor)).Padding(0, 1).Render("github"))
+	lines = append(lines, "  "+lipgloss.NewStyle().Foreground(lipgloss.Color(titleColor)).Render("review requested"))
+
+	if !m.reviewPRsLoaded && m.reviewPRsLoading {
+		lines = append(lines, "    "+lipgloss.NewStyle().Foreground(lipgloss.Color(textColor)).Render("loading..."))
+		return strings.Join(lines, "\n")
+	}
+	if len(m.reviewPRs) == 0 {
+		lines = append(lines, "    "+lipgloss.NewStyle().Foreground(lipgloss.Color(textColor)).Render("none"))
+	} else {
+		limit := maxH - len(lines)
+		if limit < 1 {
+			limit = 1
+		}
+		for i, pr := range m.reviewPRs {
+			if i >= limit {
+				break
+			}
+			author := pr.Author.Login
+			if author == "" {
+				author = pr.Author.Name
+			}
+			label := fmt.Sprintf("#%d %s", pr.Number, pr.Branch)
+			if len(label) > width-10 {
+				label = label[:width-13] + "..."
+			}
+			line := fmt.Sprintf("    %-24s %s", label, author)
+			if active && m.reviewPRsCursor == i {
+				line = "  " + lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Blue)).Bold(true).Render("> "+line)
+			} else {
+				line = "  " + lipgloss.NewStyle().Foreground(lipgloss.Color(textColor)).Render("  "+line)
+			}
+			lines = append(lines, line)
+		}
+	}
+
+	if m.linearAPIKey != "" {
+		lines = append(lines, "")
+		lines = append(lines, "  "+lipgloss.NewStyle().Foreground(lipgloss.Color(titleColor)).Render("linear"))
+		if m.linearLoading && !m.linearLoaded {
+			lines = append(lines, "    "+lipgloss.NewStyle().Foreground(lipgloss.Color(textColor)).Render("loading..."))
+			return strings.Join(lines, "\n")
+		}
+		if len(m.linearIssues) == 0 {
+			lines = append(lines, "    "+lipgloss.NewStyle().Foreground(lipgloss.Color(textColor)).Render("none"))
+			return strings.Join(lines, "\n")
+		}
+
+		for i, issue := range m.linearIssues {
+			if len(lines) >= maxH {
+				break
+			}
+
+			icon := "○"
+			iconColor := m.theme.Gray
+			stateLabel := ""
+			switch {
+			case strings.EqualFold(issue.StateName, "In Progress"):
+				icon = "◑"
+				iconColor = m.theme.Yellow
+				stateLabel = "progress"
+			case strings.EqualFold(issue.StateName, "In Review"):
+				icon = "◎"
+				iconColor = m.theme.Cyan
+				stateLabel = "review"
+			case strings.EqualFold(issue.StateType, "started"):
+				icon = "◑"
+				iconColor = m.theme.Yellow
+				stateLabel = strings.ToLower(issue.StateName)
+			default:
+				stateLabel = "todo"
+			}
+
+			titleStr := issue.Title
+			maxTitle := width - 30
+			if maxTitle < 10 {
+				maxTitle = 10
+			}
+			if len(titleStr) > maxTitle {
+				titleStr = titleStr[:maxTitle-3] + "..."
+			}
+
+			stateTag := lipgloss.NewStyle().Foreground(lipgloss.Color(iconColor)).Render(icon + " " + stateLabel)
+			idStr := lipgloss.NewStyle().Foreground(lipgloss.Color(iconColor)).Bold(true).Render(issue.Identifier)
+			titleRender := lipgloss.NewStyle().Foreground(lipgloss.Color(textColor)).Render(titleStr)
+
+			styled := fmt.Sprintf("    %s  %s  %s", stateTag, idStr, titleRender)
+			if active && m.reviewPRsCursor == len(m.reviewPRs)+i {
+				styled = "    " + lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Blue)).Bold(true).Render(fmt.Sprintf("> %s  %s  %s", stateLabel, issue.Identifier, titleStr))
+			}
+			lines = append(lines, styled)
+
+			for _, wt := range issue.Worktrees {
+				if len(lines) >= maxH {
+					break
+				}
+				progress := ""
+				if wt.HasTasks {
+					progress = fmt.Sprintf(" %s %d/%d", progressBar(wt.Done, wt.Total, 4), wt.Done, wt.Total)
+				}
+				wtLine := fmt.Sprintf("● %s%s", wt.Repo, progress)
+				lines = append(lines, "        "+lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Green)).Render(wtLine))
+
+				linkedPR := m.findPRForRepo(issue.Identifier, wt.Repo)
+				if linkedPR != nil && len(lines) < maxH {
+					prLine := m.formatPRInline(linkedPR)
+					lines = append(lines, "            "+prLine)
+				}
+			}
+
+			if len(issue.Worktrees) == 0 {
+				linkedPR := m.findPRForTicket(issue.Identifier)
+				if linkedPR != nil && len(lines) < maxH {
+					prLine := m.formatPRInline(linkedPR)
+					lines = append(lines, "        "+prLine)
+				}
+			}
+		}
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func (m pickerModel) findPRForTicket(ticketID string) *prs.PR {
+	lower := strings.ToLower(ticketID)
+	for _, cached := range m.prCache {
+		for i := range cached {
+			if strings.Contains(strings.ToLower(cached[i].Branch), lower) {
+				return &cached[i]
+			}
+		}
+	}
+	if m.prRepo != "" {
+		for i := range m.prList {
+			if strings.Contains(strings.ToLower(m.prList[i].Branch), lower) {
+				return &m.prList[i]
+			}
+		}
+	}
+	return nil
+}
+
+func (m pickerModel) findPRForRepo(ticketID, repoName string) *prs.PR {
+	lower := strings.ToLower(ticketID)
+	if cached, ok := m.prCache[repoName]; ok {
+		for i := range cached {
+			if strings.Contains(strings.ToLower(cached[i].Branch), lower) {
+				return &cached[i]
+			}
+		}
+	}
+	if m.prRepo == repoName {
+		for i := range m.prList {
+			if strings.Contains(strings.ToLower(m.prList[i].Branch), lower) {
+				return &m.prList[i]
+			}
+		}
+	}
+	return nil
+}
+
+func (m pickerModel) formatPRInline(pr *prs.PR) string {
+	prIcon, prColor := prs.ChecksIcon(prs.ChecksSummary(*pr))
+	reviewIcon, reviewLabel, reviewColor := prs.ReviewIcon(pr.ReviewDecision, pr.IsDraft)
+
+	prLine := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Purple)).Render(fmt.Sprintf("PR #%d", pr.Number))
+	if prIcon != "" {
+		c := m.theme.Gray
+		switch prColor {
+		case "green":
+			c = m.theme.Green
+		case "red":
+			c = m.theme.Red
+		case "yellow":
+			c = m.theme.Yellow
+		}
+		prLine += " " + lipgloss.NewStyle().Foreground(lipgloss.Color(c)).Render(prIcon)
+	}
+	if reviewIcon != "" {
+		c := m.theme.Gray
+		switch reviewColor {
+		case "green":
+			c = m.theme.Green
+		case "orange":
+			c = m.theme.Orange
+		}
+		prLine += " " + lipgloss.NewStyle().Foreground(lipgloss.Color(c)).Render(reviewIcon+" "+reviewLabel)
+	}
+	return prLine
+}
+
+func (m pickerModel) selectedGithubItem() (kind string, index int) {
+	total := len(m.reviewPRs) + len(m.linearIssues)
+	if total == 0 {
+		return "", -1
+	}
+	cursor := m.clampGithubCursor(m.reviewPRsCursor)
+	if cursor < len(m.reviewPRs) {
+		return "review", cursor
+	}
+	idx := cursor - len(m.reviewPRs)
+	if idx >= 0 && idx < len(m.linearIssues) {
+		return "linear", idx
+	}
+	return "", -1
+}
+
+func (m pickerModel) clampGithubCursor(cursor int) int {
+	total := len(m.reviewPRs) + len(m.linearIssues)
+	if total <= 0 {
+		return 0
+	}
+	if cursor < 0 {
+		return 0
+	}
+	if cursor >= total {
+		return total - 1
+	}
+	return cursor
 }
 
 func (m pickerModel) View() string {
@@ -1313,7 +2257,15 @@ func (m pickerModel) View() string {
 		return columns + "\n" + help
 	}
 
-	if m.state == stateTodo {
+	if m.state == stateBrowse || m.state == stateRepoContext || m.state == stateOverview {
+		m = m.ensurePlanCacheForSelected()
+
+		help := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(m.theme.Gray)).
+			Padding(0, 2).
+			Render("↵ open  → details  b branch  l layout  t todo  g agents  p plans  w workspace  n new  d delete  / filter  tab cycle  esc quit")
+
+		col1W, col2W, col3W := m.computeMainColumnWidths()
 		sepHeight := m.height - 3
 		if sepHeight < 1 {
 			sepHeight = 1
@@ -1322,36 +2274,28 @@ func (m pickerModel) View() string {
 			Foreground(lipgloss.Color(m.theme.Border)).
 			Render(strings.Repeat("│\n", sepHeight))
 
-		left := m.list.View()
-		agentSection := m.renderAgentSection(m.height/3, true)
-		right := m.todo.View()
-		if agentSection != "" {
-			right += "\n" + agentSection
+		m.list.SetSize(col1W, m.height-2)
+		if m.state == stateBrowse {
+			m.list.SetDelegate(m.makeActiveDelegate())
+		} else {
+			m.list.SetDelegate(m.makeDimDelegate())
+		}
+		left := lipgloss.NewStyle().Width(col1W).Render(m.list.View())
+
+		if m.width < 80 {
+			return left + "\n" + help
 		}
 
-		columns := lipgloss.JoinHorizontal(lipgloss.Top, left, sep, right)
-		return columns
-	}
-
-	if m.state == stateAgent {
-		sepHeight := m.height - 3
-		if sepHeight < 1 {
-			sepHeight = 1
+		if m.width <= 120 {
+			col3 := lipgloss.NewStyle().Width(col3W).Render(m.renderOverviewColumn(col3W, m.height-2, m.state == stateOverview))
+			columns := lipgloss.JoinHorizontal(lipgloss.Top, left, sep, col3)
+			return columns + "\n" + help
 		}
-		sep := lipgloss.NewStyle().
-			Foreground(lipgloss.Color(m.theme.Border)).
-			Render(strings.Repeat("│\n", sepHeight))
 
-		left := m.list.View()
-		todoSection := m.renderTodoSection(m.height/3, true)
-		right := ""
-		if todoSection != "" {
-			right = todoSection + "\n"
-		}
-		right += m.agent.View()
-
-		columns := lipgloss.JoinHorizontal(lipgloss.Top, left, sep, right)
-		return columns
+		col2 := lipgloss.NewStyle().Width(col2W).Render(m.renderRepoColumn(col2W, m.height-2, m.state == stateRepoContext))
+		col3 := lipgloss.NewStyle().Width(col3W).Render(m.renderOverviewColumn(col3W, m.height-2, m.state == stateOverview))
+		columns := lipgloss.JoinHorizontal(lipgloss.Top, left, sep, col2, sep, col3)
+		return columns + "\n" + help
 	}
 
 	if m.state == stateBranch {
@@ -1386,31 +2330,21 @@ func (m pickerModel) View() string {
 		return columns
 	}
 
-	help := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(m.theme.Gray)).
-		Padding(0, 2).
-		Render("↵ open  → details  b branch  l layout  t todo  g agents  w workspace  n new  d delete  / filter  esc quit")
-
-	isFiltering := m.list.FilterState() == list.Filtering || m.list.FilterState() == list.FilterApplied
-	dashboard := m.renderDashboard()
-	if dashboard == "" || isFiltering {
-		return m.list.View() + "\n" + help
-	}
-
-	sepHeight := m.height - 3
-	if sepHeight < 1 {
-		sepHeight = 1
-	}
-	sep := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(m.theme.Border)).
-		Render(strings.Repeat("│\n", sepHeight))
-
-	columns := lipgloss.JoinHorizontal(lipgloss.Top, m.list.View(), sep, dashboard)
-	return columns + "\n" + help
+	return m.list.View()
 }
 
 func (m pickerModel) dashW() int {
-	return m.width - m.width/4 - 2
+	_, col2, col3 := m.computeMainColumnWidths()
+	if m.state == stateRepoContext && col2 > 0 {
+		return col2
+	}
+	if col3 > 0 {
+		return col3
+	}
+	if m.width > 0 {
+		return m.width
+	}
+	return 40
 }
 
 func (m pickerModel) renderTodoSection(maxH int, dimmed ...bool) string {
@@ -1515,10 +2449,16 @@ func (m pickerModel) renderTodoSection(maxH int, dimmed ...bool) string {
 }
 
 func (m pickerModel) renderAgentSection(maxH int, dimmed ...bool) string {
-	if len(m.agentList) == 0 {
-		return ""
-	}
 	isDimmed := len(dimmed) > 0 && dimmed[0]
+	if len(m.agentList) == 0 {
+		titleColor := m.theme.Blue
+		if isDimmed {
+			titleColor = m.theme.Gray
+		}
+		title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(titleColor)).Padding(0, 1).Render("agents")
+		loading := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Gray)).Render("  loading...")
+		return title + "\n" + loading
+	}
 	dashW := m.dashW()
 	var lines []string
 
@@ -1582,25 +2522,228 @@ func (m pickerModel) renderAgentSection(maxH int, dimmed ...bool) string {
 	return strings.Join(lines, "\n")
 }
 
-func (m pickerModel) renderDashboard() string {
-	hasTodos := len(m.todoGroups) > 0
-	hasAgents := len(m.agentList) > 0
-	if (!hasTodos && !hasAgents) || m.width < 60 || m.dashW() < 20 {
+func (m pickerModel) renderPlanSection(maxH int, dimmed ...bool) string {
+	if maxH < 2 {
 		return ""
 	}
-	maxH := m.height - 5
-	todoSection := m.renderTodoSection(maxH)
-	todoLines := strings.Count(todoSection, "\n") + 1
-	agentSection := m.renderAgentSection(maxH - todoLines)
+	isDimmed := len(dimmed) > 0 && dimmed[0]
+	var lines []string
 
-	var parts []string
-	if todoSection != "" {
-		parts = append(parts, todoSection)
+	titleColor := m.theme.Blue
+	if isDimmed {
+		titleColor = m.theme.Gray
 	}
-	if agentSection != "" {
-		parts = append(parts, agentSection)
+	lines = append(lines, lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color(titleColor)).
+		Padding(0, 1).
+		Render("plans"))
+	lines = append(lines, "")
+
+	if len(m.planList) == 0 {
+		noData := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Gray)).Render("  no tasks")
+		lines = append(lines, noData)
+		lines = append(lines, "")
+		return strings.Join(lines, "\n")
 	}
-	return strings.Join(parts, "\n")
+
+	for _, p := range m.planList {
+		if len(lines) >= maxH {
+			break
+		}
+		status := fmt.Sprintf("%s %d/%d", progressBar(p.Done, p.Total, 9), p.Done, p.Total)
+		if p.Total > 0 && p.Done == p.Total {
+			status += " done"
+		}
+		branchColor := m.theme.Purple
+		statusColor := m.theme.Gray
+		if isDimmed {
+			branchColor = m.theme.Gray
+			statusColor = m.theme.Border
+		}
+		branch := lipgloss.NewStyle().Foreground(lipgloss.Color(branchColor)).Render(p.Branch)
+		line := fmt.Sprintf("  %-12s %s", branch, lipgloss.NewStyle().Foreground(lipgloss.Color(statusColor)).Render(status))
+		lines = append(lines, line)
+	}
+	lines = append(lines, "")
+
+	return strings.Join(lines, "\n")
+}
+
+func (m pickerModel) renderPRSection(maxH int, dimmed ...bool) string {
+	isDimmed := len(dimmed) > 0 && dimmed[0]
+	repo := m.selectedRepo()
+	if repo == nil || maxH < 2 {
+		titleColor := m.theme.Blue
+		if isDimmed {
+			titleColor = m.theme.Gray
+		}
+		title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(titleColor)).Padding(0, 1).Render("pull requests")
+		return title
+	}
+	if m.prRepo != repo.Name || len(m.prList) == 0 {
+		titleColor := m.theme.Blue
+		if isDimmed {
+			titleColor = m.theme.Gray
+		}
+		title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(titleColor)).Padding(0, 1).Render("pull requests")
+		msg := "  loading..."
+		if m.prRepo == repo.Name && !m.prLoading {
+			msg = "  no PRs"
+		}
+		loading := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Gray)).Render(msg)
+		return title + "\n" + loading
+	}
+	var lines []string
+
+	titleColor := m.theme.Blue
+	if isDimmed {
+		titleColor = m.theme.Gray
+	}
+	lines = append(lines, lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color(titleColor)).
+		Padding(0, 1).
+		Render("pull requests"))
+	lines = append(lines, "")
+
+	for _, pr := range m.prList {
+		if len(lines) >= maxH {
+			break
+		}
+		numColor := m.theme.Purple
+		branchColor := m.theme.Purple
+		metaColor := m.theme.Gray
+		if isDimmed {
+			numColor = m.theme.Gray
+			branchColor = m.theme.Gray
+			metaColor = m.theme.Border
+		}
+
+		number := lipgloss.NewStyle().Foreground(lipgloss.Color(numColor)).Render(fmt.Sprintf("#%d", pr.Number))
+		branch := lipgloss.NewStyle().Foreground(lipgloss.Color(branchColor)).Render(pr.Branch)
+
+		if pr.State == "MERGED" {
+			stateColor := m.theme.Purple
+			if isDimmed {
+				stateColor = m.theme.Border
+			}
+			lines = append(lines, fmt.Sprintf("  %s %-14s  %s", number, branch, lipgloss.NewStyle().Foreground(lipgloss.Color(stateColor)).Render("◆ merged")))
+			continue
+		}
+		if pr.State == "CLOSED" {
+			stateColor := m.theme.Red
+			if isDimmed {
+				stateColor = m.theme.Border
+			}
+			lines = append(lines, fmt.Sprintf("  %s %-14s  %s", number, branch, lipgloss.NewStyle().Foreground(lipgloss.Color(stateColor)).Render("✗ closed")))
+			continue
+		}
+
+		passed, failed, pending := prs.ChecksSummary(pr)
+		checkIcon, checkColor := prs.ChecksIcon(passed, failed, pending)
+		total := passed + failed + pending
+		checkPart := ""
+		if checkIcon != "" && total > 0 {
+			c := m.theme.Gray
+			switch checkColor {
+			case "green":
+				c = m.theme.Green
+			case "red":
+				c = m.theme.Red
+			case "yellow":
+				c = m.theme.Yellow
+			}
+			if isDimmed {
+				c = m.theme.Border
+			}
+			checkPart = fmt.Sprintf("%s %d/%d", lipgloss.NewStyle().Foreground(lipgloss.Color(c)).Render(checkIcon), passed, total)
+		}
+
+		reviewIcon, reviewLabel, reviewColor := prs.ReviewIcon(pr.ReviewDecision, pr.IsDraft)
+		reviewPart := ""
+		if reviewIcon != "" {
+			c := m.theme.Gray
+			switch reviewColor {
+			case "green":
+				c = m.theme.Green
+			case "orange":
+				c = m.theme.Orange
+			case "gray":
+				c = m.theme.Gray
+			}
+			if isDimmed {
+				c = m.theme.Border
+			}
+			reviewPart = fmt.Sprintf("%s %s", lipgloss.NewStyle().Foreground(lipgloss.Color(c)).Render(reviewIcon), lipgloss.NewStyle().Foreground(lipgloss.Color(metaColor)).Render(reviewLabel))
+		}
+
+		parts := []string{fmt.Sprintf("%s %-14s", number, branch)}
+		if checkPart != "" {
+			parts = append(parts, checkPart)
+		}
+		if reviewPart != "" {
+			parts = append(parts, reviewPart)
+		}
+		lines = append(lines, "  "+strings.Join(parts, "  "))
+	}
+	lines = append(lines, "")
+
+	return strings.Join(lines, "\n")
+}
+
+func (m pickerModel) ensurePlanCacheForSelected() pickerModel {
+	if m.tasksDir == "" {
+		return m
+	}
+	repo := m.selectedRepo()
+	if repo == nil {
+		m.planRepo = ""
+		m.planList = nil
+		return m
+	}
+	if m.planCache == nil {
+		m.planCache = map[string][]plans.BranchProgress{}
+	}
+	if cached, ok := m.planCache[repo.Name]; ok {
+		m.planRepo = repo.Name
+		m.planList = cached
+		return m
+	}
+	loaded := plans.LoadForRepo(m.tasksDir, repo.Name)
+	m.planCache[repo.Name] = loaded
+	m.planRepo = repo.Name
+	m.planList = loaded
+	return m
+}
+
+func (m pickerModel) ensurePRCacheForSelected() (pickerModel, tea.Cmd) {
+	repo := m.selectedRepo()
+	if repo == nil || !repo.HasSession {
+		m.prRepo = ""
+		m.prList = nil
+		return m, nil
+	}
+
+	if m.prCache == nil {
+		m.prCache = map[string][]prs.PR{}
+	}
+	if m.prLoadingSet == nil {
+		m.prLoadingSet = map[string]bool{}
+	}
+
+	if cached, ok := m.prCache[repo.Name]; ok {
+		m.prRepo = repo.Name
+		m.prList = cached
+		return m, nil
+	}
+
+	if m.prLoadingSet[repo.Name] {
+		return m, nil
+	}
+
+	m.prLoadingSet[repo.Name] = true
+	return m, loadPRsCmd(repo.Name, repo.Path)
 }
 
 func runPicker() {
@@ -1616,6 +2759,10 @@ func runPicker() {
 	m.allRepos = repos
 	m.recentList = recentList
 	m.currentSession = m.tmux.session
+	homeDir, err := os.UserHomeDir()
+	if err == nil {
+		m.tasksDir = filepath.Join(homeDir, ".config", "opencode", "tasks")
+	}
 	m.workspaceNames = scanner.WorkspaceNames(cfg)
 	m.workspace = cfg.Search.DefaultWorkspace
 	if m.workspace != "" {
@@ -1623,6 +2770,9 @@ func runPicker() {
 		m.list.SetItems(m.rebuildListItems())
 	}
 	m.todoGroups = todoGroups
+	m.linearAPIKey = linear.LoadAPIKey()
+	m.linearLoading = m.linearAPIKey != ""
+	m = m.ensurePlanCacheForSelected()
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	result, err := p.Run()
 	if err != nil {
@@ -1631,6 +2781,35 @@ func runPicker() {
 	}
 
 	final := result.(pickerModel)
+
+	if strings.HasPrefix(final.action, "open-pr:") {
+		numStr := strings.TrimPrefix(final.action, "open-pr:")
+		if final.selected != nil {
+			cmd := exec.Command("gh", "pr", "view", numStr, "--json", "url", "-q", ".url")
+			cmd.Dir = final.selected.Path
+			if out, err := cmd.Output(); err == nil {
+				url := strings.TrimSpace(string(out))
+				if url != "" {
+					exec.Command("open", url).Run()
+				}
+			}
+		}
+		return
+	}
+
+	if strings.HasPrefix(final.action, "open-linear:") {
+		url := strings.TrimPrefix(final.action, "open-linear:")
+		if url != "" {
+			exec.Command("open", url).Run()
+		}
+		return
+	}
+
+	if strings.HasPrefix(final.action, "linear-work:") {
+		ticketID := strings.TrimPrefix(final.action, "linear-work:")
+		handleLinearWork(final, ticketID, cfg)
+		return
+	}
 
 	if final.action == "agent-jump" {
 		handleAgentDeferred(final.agent)
@@ -1725,7 +2904,11 @@ func createSession(name, path string) {
 
 func switchToSession(name string) {
 	if os.Getenv("TMUX") == "" {
-		exec.Command("tmux", "-u", "-2", "attach-session", "-t="+name).Run()
+		cmd := exec.Command("tmux", "-u", "-2", "attach-session", "-t="+name)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Run()
 	} else {
 		exec.Command("tmux", "switch-client", "-t", name).Run()
 	}
@@ -1774,4 +2957,80 @@ func cleanupInitialWindow(name string) {
 		exec.Command("tmux", "kill-window", "-t", name+":1").Run()
 		exec.Command("tmux", "move-window", "-r", "-t", name).Run()
 	}
+}
+
+func handleLinearWork(m pickerModel, ticketID string, cfg *config.Config) {
+	ticketID = strings.TrimSpace(ticketID)
+	if ticketID == "" {
+		return
+	}
+
+	for _, issue := range m.linearIssues {
+		if !strings.EqualFold(issue.Identifier, ticketID) {
+			continue
+		}
+		if len(issue.Worktrees) > 0 {
+			jumpOrCreateLinearWorktree(issue.Worktrees[0], m, cfg)
+			return
+		}
+		break
+	}
+
+	repo := m.selected
+	if repo == nil && len(m.allRepos) > 0 {
+		r := m.allRepos[0]
+		repo = &r
+	}
+	if repo == nil {
+		return
+	}
+	branchName := strings.ToLower(ticketID)
+	jumpOrCreateLinearWorktree(linear.TicketWorktree{Repo: repo.Name, Branch: branchName}, m, cfg)
+}
+
+func jumpOrCreateLinearWorktree(wt linear.TicketWorktree, m pickerModel, cfg *config.Config) {
+	var repo *scanner.Repo
+	for i := range m.allRepos {
+		if m.allRepos[i].Name == wt.Repo {
+			repo = &m.allRepos[i]
+			break
+		}
+	}
+	if repo == nil {
+		return
+	}
+
+	if !repo.HasSession {
+		createSession(repo.Name, repo.Path)
+	}
+	switchToSession(repo.Name)
+
+	if wid := findWorktreeWindowID(repo.Name, wt.Branch); wid != "" {
+		exec.Command("tmux", "select-window", "-t", wid).Run()
+		return
+	}
+
+	worktreeDir := filepath.Join(repo.Path, cfg.Branch.WorktreeDir, wt.Branch)
+	if _, err := os.Stat(worktreeDir); err != nil {
+		exec.Command("git", "-C", repo.Path, "worktree", "add", worktreeDir, wt.Branch).Run()
+	}
+	layoutScript := filepath.Join(cfg.Paths.Layouts, cfg.Layout.Default+".sh")
+	exec.Command(layoutScript, worktreeDir, repo.Name, wt.Branch).Run()
+}
+
+func findWorktreeWindowID(sessionName, branch string) string {
+	out, err := exec.Command("tmux", "list-windows", "-t", sessionName, "-F", "#{window_id}\t#{@worktree}").Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if strings.EqualFold(parts[1], branch) {
+			return strings.TrimSpace(parts[0])
+		}
+	}
+	return ""
 }
