@@ -15,16 +15,32 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+type hooks struct {
+	PostCreate []string `json:"post_create"`
+	PreDelete  []string `json:"pre_delete"`
+	PostDelete []string `json:"post_delete"`
+}
+
 type service struct {
-	Name string `json:"name"`
-	Run  string `json:"run"`
-	Cwd  string `json:"cwd"`
+	Name  string   `json:"name"`
+	Run   string   `json:"run"`
+	Cwd   string   `json:"cwd"`
+	Setup []string `json:"setup"`
 }
 
 type projectConfig struct {
 	DefaultLayout string    `json:"default_layout"`
 	Env           string    `json:"env"`
+	Hooks         hooks     `json:"hooks"`
 	Services      []service `json:"services"`
+}
+
+func runHooks(commands []string, cwd string) {
+	for _, cmd := range commands {
+		c := exec.Command("sh", "-c", cmd)
+		c.Dir = cwd
+		c.Run()
+	}
 }
 
 func loadProjectConfig(projectsDir, repoName string) projectConfig {
