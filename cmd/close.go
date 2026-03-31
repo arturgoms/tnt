@@ -111,11 +111,19 @@ func runClose(args []string) {
 		return
 	}
 	root := strings.TrimSpace(string(gitRoot))
+	repoName := filepath.Base(root)
+	projCfg := loadProjectConfig(app.Config.Paths.Projects, repoName)
 	wtPath := filepath.Join(root, ".worktrees", branch)
 	if _, err := os.Stat(wtPath); err == nil {
+		runHooks(projCfg.Hooks.PreDelete, wtPath)
+		postDeleteCmds := ""
+		for _, cmd := range projCfg.Hooks.PostDelete {
+			escaped := strings.ReplaceAll(cmd, "'", "'\\''")
+			postDeleteCmds += fmt.Sprintf("; sh -c '%s'", escaped)
+		}
 		confirmCmd := fmt.Sprintf(
-			"run-shell \"git -C '%s' worktree remove '%s' --force 2>/dev/null; git -C '%s' branch -d '%s' 2>/dev/null; tmux display-message 'Removed worktree: %s'\"",
-			root, wtPath, root, branch, branch,
+			"run-shell \"git -C '%s' worktree remove '%s' --force 2>/dev/null; git -C '%s' branch -d '%s' 2>/dev/null%s; tmux display-message 'Removed worktree: %s'\"",
+			root, wtPath, root, branch, postDeleteCmds, branch,
 		)
 		exec.Command("tmux", "confirm-before", "-p",
 			fmt.Sprintf("Remove worktree '%s' from disk? (y/n)", branch),
