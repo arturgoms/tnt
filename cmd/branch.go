@@ -419,6 +419,8 @@ func handleBranchDeferred(m branchModel) {
 			return
 		}
 		worktree.OpenWorktreeWindow(m.ctx, wtPath, m.actionArg)
+		cfg := loadProjectConfig(app.Config.Paths.Projects, m.ctx.RepoName)
+		runHooks(cfg.Hooks.PostCreate, wtPath)
 	}
 }
 
