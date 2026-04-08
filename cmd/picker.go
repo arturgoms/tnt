@@ -1762,11 +1762,11 @@ func (m pickerModel) updateOverview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			switch kind {
 			case "review":
 				selected := m.reviewPRs[idx]
-				if selected.Branch != "" {
+				if selected.Number > 0 {
 					repo := m.selectedRepo()
 					if repo != nil {
 						m.selected = repo
-						m.action = "jump-window:" + selected.Branch
+						m.action = fmt.Sprintf("open-pr:%d", selected.Number)
 						m.quitting = true
 						return m, tea.Quit
 					}
