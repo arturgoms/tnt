@@ -206,22 +206,29 @@ func OpenWorktreeWindow(ctx RepoContext, wtPath, branchName string) error {
 
 func JumpToWorktree(ctx RepoContext, branch string, isMain bool) error {
 	windows := tmuxWorktreeWindows(ctx.SessionName)
-	if wid, ok := windows[branch]; ok {
+
+	lookupBranch := branch
+	if isMain {
+		lookupBranch = gitCurrentBranch(ctx.MainRoot)
+	}
+
+	if wid, ok := windows[lookupBranch]; ok {
 		exec.Command("tmux", "select-window", "-t", wid).Run()
 		exec.Command("tmux", "switch-client", "-t", ctx.SessionName).Run()
 		return nil
 	}
 
 	if isMain {
-		out, err := exec.Command("tmux", "list-windows", "-t", ctx.SessionName, "-F", "#{window_index}").Output()
-		if err == nil {
-			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-			if len(lines) > 0 && lines[0] != "" {
-				exec.Command("tmux", "select-window", "-t", ctx.SessionName+":"+lines[0]).Run()
-				exec.Command("tmux", "switch-client", "-t", ctx.SessionName).Run()
-				return nil
+		if err := OpenWorktreeWindow(ctx, ctx.MainRoot, lookupBranch); err != nil {
+			fmt.Fprintf(os.Stderr, "tnt: layout failed for main (%v), opening plain window\n", err)
+			wid, err2 := exec.Command("tmux", "new-window", "-P", "-F", "#{window_id}",
+				"-t", ctx.SessionName, "-n", lookupBranch+":dev", "-c", ctx.MainRoot).Output()
+			if err2 != nil {
+				return fmt.Errorf("open main window: %w", err2)
 			}
+			exec.Command("tmux", "set-option", "-w", "-t", strings.TrimSpace(string(wid)), "@worktree", lookupBranch).Run()
 		}
+		exec.Command("tmux", "switch-client", "-t", ctx.SessionName).Run()
 		return nil
 	}
 
