@@ -185,23 +185,66 @@ func CreateWorktree(ctx RepoContext, branchName string) (string, error) {
 	return wtPath, nil
 }
 
+var worktreeColors = []string{
+	"colour167", "colour173", "colour179", "colour148",
+	"colour107", "colour73", "colour74", "colour111",
+	"colour140", "colour176", "colour204", "colour209",
+}
+
+func WorktreeColor(branch string) string {
+	h := uint32(5381)
+	for _, c := range branch {
+		h = h*31 + uint32(c)
+	}
+	return worktreeColors[h%uint32(len(worktreeColors))]
+}
+
+func lastWindowForBranch(sessionName, branch string) string {
+	out, err := exec.Command("tmux", "list-windows", "-t", sessionName,
+		"-F", "#{window_id}\t#{@worktree}").Output()
+	if err != nil {
+		return ""
+	}
+	last := ""
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) == 2 && parts[1] == branch {
+			last = parts[0]
+		}
+	}
+	return last
+}
+
 func OpenWorktreeWindow(ctx RepoContext, wtPath, branchName string) error {
 	layout := defaultLayout(ctx)
 	script := filepath.Join(ctx.LayoutsDir, layout+".sh")
+	afterWID := lastWindowForBranch(ctx.SessionName, branchName)
+	color := WorktreeColor(branchName)
 
 	if info, err := os.Stat(script); err == nil && info.Mode()&0111 != 0 {
-		return exec.Command(script, wtPath, ctx.SessionName, branchName).Run()
+		return exec.Command(script, wtPath, ctx.SessionName, branchName, afterWID, color).Run()
 	}
 
 	short := branchName
 	if idx := strings.LastIndex(branchName, "/"); idx >= 0 {
 		short = branchName[idx+1:]
 	}
-	wid, err := exec.Command("tmux", "new-window", "-P", "-F", "#{window_id}", "-t", ctx.SessionName, "-n", short+":"+layout, "-c", wtPath).Output()
+
+	args := []string{"new-window", "-P", "-F", "#{window_id}", "-n", short + ":" + layout, "-c", wtPath}
+	if afterWID != "" {
+		args = append(args, "-a", "-t", afterWID)
+	} else {
+		args = append(args, "-t", ctx.SessionName)
+	}
+
+	wid, err := exec.Command("tmux", args...).Output()
 	if err != nil {
 		return err
 	}
-	return exec.Command("tmux", "set-option", "-w", "-t", strings.TrimSpace(string(wid)), "@worktree", branchName).Run()
+	widStr := strings.TrimSpace(string(wid))
+	exec.Command("tmux", "set-option", "-w", "-t", widStr, "@worktree", branchName).Run()
+	exec.Command("tmux", "set-option", "-w", "-t", widStr, "@worktree_color", color).Run()
+	return nil
 }
 
 func JumpToWorktree(ctx RepoContext, branch string, isMain bool) error {
