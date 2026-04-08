@@ -11,6 +11,7 @@ import (
 
 	"github.com/arturgomes/tnt/internal/config"
 	"github.com/arturgomes/tnt/internal/tmux"
+	"github.com/arturgomes/tnt/internal/worktree"
 )
 
 type PaneType string
@@ -389,6 +390,7 @@ func restoreWithPanes(cfg *config.Config, sessionName string, w Window, workdir 
 		return
 	}
 	tmux.SetWindowOption(wid, "@worktree", w.Branch)
+	tmux.SetWindowOption(wid, "@worktree_color", worktree.WorktreeColor(w.Branch))
 
 	socketDir := filepath.Join(cfg.Paths.Projects, sessionName, "sockets")
 	os.MkdirAll(socketDir, 0755)

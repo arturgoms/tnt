@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/arturgomes/tnt/internal/theme"
+	"github.com/arturgomes/tnt/internal/worktree"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -84,6 +85,7 @@ func ensureRunWindow(session, workdir, branch string) string {
 	wid = strings.TrimSpace(string(out))
 	exec.Command("tmux", "set-option", "-w", "-t", wid, "@run", "1").Run()
 	exec.Command("tmux", "set-option", "-w", "-t", wid, "@worktree", branch).Run()
+	exec.Command("tmux", "set-option", "-w", "-t", wid, "@worktree_color", worktree.WorktreeColor(branch)).Run()
 	return wid
 }
 
