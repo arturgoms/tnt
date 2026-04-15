@@ -18,7 +18,7 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:   "tnt",
-	Short: "tmux-native agent orchestration",
+	Short: "tmux wrapper for sessions, worktrees, and layouts",
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load(cfgPath)
 		if err != nil {
@@ -37,7 +37,7 @@ var rootCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&cfgPath, "config", "", "config file (default: ~/.config/dotflow/tnt/config.toml)")
+	rootCmd.PersistentFlags().StringVar(&cfgPath, "config", "", "config file (default: ~/.config/tnt/config.toml)")
 	rootCmd.Flags().BoolVar(&todoFlag, "todo", false, "open todo manager")
 
 	// tnt worktree (branch picker, close, layout, run)
