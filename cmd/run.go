@@ -55,6 +55,18 @@ func loadProjectConfig(projectsDir, repoName string) projectConfig {
 	return cfg
 }
 
+func moveRunWindowFirst(session, wid string) {
+	out, err := exec.Command("tmux", "list-windows", "-t", session, "-F", "#{window_id}").Output()
+	if err != nil {
+		return
+	}
+	windows := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(windows) == 0 || windows[0] == wid {
+		return
+	}
+	exec.Command("tmux", "move-window", "-b", "-s", wid, "-t", windows[0]).Run()
+}
+
 func findRunWindow(session string) string {
 	out, err := exec.Command("tmux", "list-windows", "-t", session, "-F", "#{window_id} #{@run}").Output()
 	if err != nil {
@@ -86,6 +98,7 @@ func ensureRunWindow(session, workdir, branch string) string {
 	exec.Command("tmux", "set-option", "-w", "-t", wid, "@run", "1").Run()
 	exec.Command("tmux", "set-option", "-w", "-t", wid, "@worktree", branch).Run()
 	exec.Command("tmux", "set-option", "-w", "-t", wid, "@worktree_color", worktree.WorktreeColor(branch)).Run()
+	moveRunWindowFirst(session, wid)
 	return wid
 }
 
@@ -111,7 +124,7 @@ func firstPane(windowID string) string {
 	return ""
 }
 
-func runStartServices(session, workdir, branch, projectsDir, repoName string) {
+func runStartServices(session, workdir, branch, projectsDir, repoName, mainRoot string) {
 	cfg := loadProjectConfig(projectsDir, repoName)
 	if len(cfg.Services) == 0 {
 		exec.Command("tmux", "display-message", "No services in config").Run()
@@ -137,6 +150,7 @@ func runStartServices(session, workdir, branch, projectsDir, repoName string) {
 			pane := firstPane(wid)
 			waitForPane(pane)
 			exec.Command("tmux", "send-keys", "-t", pane, "cd '"+svcDir+"'", "Enter").Run()
+			exec.Command("tmux", "send-keys", "-t", pane, "export TNT_MAIN_ROOT='"+mainRoot+"'", "Enter").Run()
 			if cfg.Env != "" {
 				exec.Command("tmux", "send-keys", "-t", pane, cfg.Env, "Enter").Run()
 			}
@@ -151,6 +165,7 @@ func runStartServices(session, workdir, branch, projectsDir, repoName string) {
 			}
 			paneID := strings.TrimSpace(string(out))
 			time.Sleep(300 * time.Millisecond)
+			exec.Command("tmux", "send-keys", "-t", paneID, "export TNT_MAIN_ROOT='"+mainRoot+"'", "Enter").Run()
 			if cfg.Env != "" {
 				exec.Command("tmux", "send-keys", "-t", paneID, cfg.Env, "Enter").Run()
 			}
@@ -210,7 +225,7 @@ func runSwitchWorktree(session, workdir, branch, mainRoot string) {
 	wid := findRunWindow(session)
 	if wid == "" {
 		repoName := filepath.Base(mainRoot)
-		runStartServices(session, workdir, branch, app.Config.Paths.Projects, repoName)
+		runStartServices(session, workdir, branch, app.Config.Paths.Projects, repoName, mainRoot)
 		return
 	}
 
@@ -237,11 +252,13 @@ func runSwitchWorktree(session, workdir, branch, mainRoot string) {
 		short = branch[idx+1:]
 	}
 	exec.Command("tmux", "set-option", "-w", "-t", wid, "@worktree", branch).Run()
+	exec.Command("tmux", "set-option", "-w", "-t", wid, "@worktree_color", worktree.WorktreeColor(branch)).Run()
 	exec.Command("tmux", "rename-window", "-t", wid, short+":run").Run()
+	moveRunWindowFirst(session, wid)
 
 	time.Sleep(300 * time.Millisecond)
 	repoName := filepath.Base(mainRoot)
-	runStartServices(session, workdir, branch, app.Config.Paths.Projects, repoName)
+	runStartServices(session, workdir, branch, app.Config.Paths.Projects, repoName, mainRoot)
 }
 
 // --- pick TUI ---
@@ -346,6 +363,11 @@ func runPickWorktrees(session, mainRoot string) {
 		return
 	}
 
+	mainBranch := ""
+	if out, err := exec.Command("git", "-C", mainRoot, "branch", "--show-current").Output(); err == nil {
+		mainBranch = strings.TrimSpace(string(out))
+	}
+
 	seen := map[string]bool{}
 	var entries []runPickEntry
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -363,9 +385,12 @@ func runPickWorktrees(session, mainRoot string) {
 		if idx := strings.LastIndex(wt, "/"); idx >= 0 {
 			short = wt[idx+1:]
 		}
-		wtPath := filepath.Join(mainRoot, ".worktrees", wt)
-		if _, err := os.Stat(wtPath); err != nil {
-			wtPath = mainRoot
+		wtPath := mainRoot
+		if wt != mainBranch {
+			candidate := filepath.Join(mainRoot, ".worktrees", wt)
+			if _, err := os.Stat(candidate); err == nil {
+				wtPath = candidate
+			}
 		}
 		entries = append(entries, runPickEntry{
 			short:    short,
@@ -439,7 +464,7 @@ func runRunWindow(args []string) {
 		if len(args) > 1 {
 			wd = args[1]
 		}
-		runStartServices(ctx.session, wd, branch, app.Config.Paths.Projects, repoName)
+		runStartServices(ctx.session, wd, branch, app.Config.Paths.Projects, repoName, mainRoot)
 	case "stop":
 		runStopServices(ctx.session)
 	case "restart":
@@ -449,7 +474,7 @@ func runRunWindow(args []string) {
 		if len(args) > 1 {
 			wd = args[1]
 		}
-		runStartServices(ctx.session, wd, branch, app.Config.Paths.Projects, repoName)
+		runStartServices(ctx.session, wd, branch, app.Config.Paths.Projects, repoName, mainRoot)
 	case "switch":
 		wd := workdir
 		if len(args) > 1 {
