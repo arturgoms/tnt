@@ -88,6 +88,50 @@ Actions:
 - `switch`
 - `pick`
 
+### Project Config
+
+Each repository can have a `config.json` at `~/.config/tnt/projects/{repo}/config.json`.
+
+```json
+{
+  "default_layout": "dev",
+  "env": "source .venv/bin/activate",
+  "hooks": {
+    "post_create": ["cp .env.example .env", "pip install -r requirements.txt"],
+    "pre_delete": [],
+    "post_delete": []
+  },
+  "services": [
+    {
+      "name": "backend",
+      "run": "make run",
+      "cwd": ".",
+      "setup": ["make migrate"]
+    },
+    {
+      "name": "frontend",
+      "run": "npm run dev",
+      "cwd": "frontend",
+      "setup": ["npm install"]
+    }
+  ]
+}
+```
+
+| Field | Description |
+|---|---|
+| `default_layout` | Layout script to use when opening a new session window |
+| `env` | Shell command run before each service starts (e.g. activate a venv) |
+| `hooks.post_create` | Commands run after every new worktree is created |
+| `hooks.pre_delete` | Commands run before a worktree is removed |
+| `hooks.post_delete` | Commands run after a worktree is removed |
+| `services[].name` | Display name shown in the run window |
+| `services[].run` | Command that starts the service |
+| `services[].cwd` | Working directory relative to the worktree root |
+| `services[].setup` | Commands run before `run` on each start (migrations, installs) |
+
+A starter file is installed at `~/.config/tnt/project.config.example.json` by `tnt install`.
+
 ### Session Persistence
 
 `tnt session save` saves the current tmux session state.

@@ -1,0 +1,23 @@
+{
+  "default_layout": "dev",
+  "env": "",
+  "hooks": {
+    "post_create": [],
+    "pre_delete": [],
+    "post_delete": []
+  },
+  "services": [
+    {
+      "name": "backend",
+      "run": "make run",
+      "cwd": ".",
+      "setup": []
+    },
+    {
+      "name": "frontend",
+      "run": "npm run dev",
+      "cwd": "frontend",
+      "setup": []
+    }
+  ]
+}

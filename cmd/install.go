@@ -13,6 +13,7 @@ import (
 
 var ExampleConfig []byte
 var LayoutsFS embed.FS
+var ProjectConfigExample []byte
 
 var installCmd = &cobra.Command{
 	Use:               "install",
@@ -94,8 +95,19 @@ func runInstall() error {
 		fmt.Printf("  %s  created  %s\n", tick, dest)
 	}
 
+	exampleProject := filepath.Join(base, "project.config.example.json")
+	if _, err := os.Stat(exampleProject); os.IsNotExist(err) {
+		if err := os.WriteFile(exampleProject, ProjectConfigExample, 0644); err != nil {
+			return fmt.Errorf("write project config example: %w", err)
+		}
+		fmt.Printf("  %s  created  %s\n", tick, exampleProject)
+	} else {
+		fmt.Printf("  %s  exists   %s\n", dot, exampleProject)
+	}
+
 	fmt.Println()
 	fmt.Printf("  Edit %s to configure your workspaces.\n", cfgPath)
+	fmt.Printf("  Copy %s to projects/{repo}/config.json for each repo.\n", exampleProject)
 	fmt.Println()
 	return nil
 }
