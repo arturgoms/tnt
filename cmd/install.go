@@ -13,6 +13,7 @@ import (
 
 var ExampleConfig []byte
 var LayoutsFS embed.FS
+var ScriptsFS embed.FS
 var ProjectConfigExample []byte
 
 var installCmd = &cobra.Command{
@@ -94,6 +95,32 @@ func runInstall() error {
 		}
 		fmt.Printf("  %s  created  %s\n", tick, dest)
 	}
+
+	scriptsDir := filepath.Join(base, "scripts")
+	scriptFiles, serr := fs.ReadDir(ScriptsFS, "scripts")
+	if serr != nil {
+		return fmt.Errorf("read embedded scripts: %w", serr)
+	}
+	for _, sf := range scriptFiles {
+		if sf.IsDir() {
+			continue
+		}
+		dest := filepath.Join(scriptsDir, sf.Name())
+		if _, err := os.Stat(dest); err == nil {
+			fmt.Printf("  %s  exists   %s\n", dot, dest)
+			continue
+		}
+		data, err := fs.ReadFile(ScriptsFS, filepath.Join("scripts", sf.Name()))
+		if err != nil {
+			return fmt.Errorf("read script %s: %w", sf.Name(), err)
+		}
+		if err := os.WriteFile(dest, data, 0755); err != nil {
+			return fmt.Errorf("write script %s: %w", sf.Name(), err)
+		}
+		fmt.Printf("  %s  created  %s\n", tick, dest)
+	}
+
+	fmt.Println()
 
 	exampleProjectDir := filepath.Join(base, "projects", "example")
 	if err := os.MkdirAll(exampleProjectDir, 0755); err != nil {
