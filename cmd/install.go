@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"embed"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -10,6 +12,7 @@ import (
 )
 
 var ExampleConfig []byte
+var LayoutsFS embed.FS
 
 var installCmd = &cobra.Command{
 	Use:               "install",
@@ -63,6 +66,32 @@ func runInstall() error {
 		fmt.Printf("  %s  created  %s\n", tick, cfgPath)
 	} else {
 		fmt.Printf("  %s  exists   %s\n", dot, cfgPath)
+	}
+
+	fmt.Println()
+
+	layoutsDir := filepath.Join(base, "layouts")
+	layoutFiles, lerr := fs.ReadDir(LayoutsFS, "layouts")
+	if lerr != nil {
+		return fmt.Errorf("read embedded layouts: %w", lerr)
+	}
+	for _, lf := range layoutFiles {
+		if lf.IsDir() {
+			continue
+		}
+		dest := filepath.Join(layoutsDir, lf.Name())
+		if _, err := os.Stat(dest); err == nil {
+			fmt.Printf("  %s  exists   %s\n", dot, dest)
+			continue
+		}
+		data, err := fs.ReadFile(LayoutsFS, filepath.Join("layouts", lf.Name()))
+		if err != nil {
+			return fmt.Errorf("read layout %s: %w", lf.Name(), err)
+		}
+		if err := os.WriteFile(dest, data, 0755); err != nil {
+			return fmt.Errorf("write layout %s: %w", lf.Name(), err)
+		}
+		fmt.Printf("  %s  created  %s\n", tick, dest)
 	}
 
 	fmt.Println()
