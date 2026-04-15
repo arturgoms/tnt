@@ -1,5 +1,7 @@
 # tnt
 
+[![Build](https://github.com/arturgoms/tnt/actions/workflows/build.yml/badge.svg)](https://github.com/arturgoms/tnt/actions/workflows/build.yml)
+
 `tnt` is a wrapper around tmux for managing multiple repositories as sessions, multiple worktrees as windows, and reusable layouts as pane arrangements.
 
 The core product is the TUI and CLI for session, worktree, and layout management. Integrations like opencode, Linear, GitHub CLI, and Neovim are optional enhancements.
