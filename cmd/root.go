@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
 
 	"github.com/arturgoms/tnt/internal/config"
 	"github.com/arturgoms/tnt/internal/tui"
@@ -15,6 +16,16 @@ var (
 	todoFlag bool
 	app      *tui.App
 )
+
+func resolvedVersion() string {
+	if Version != "dev" {
+		return Version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return Version
+}
 
 var rootCmd = &cobra.Command{
 	Use:   "tnt",
@@ -95,7 +106,7 @@ var versionCmd = &cobra.Command{
 		if path == "" {
 			path = config.DefaultConfigPath
 		}
-		fmt.Printf("tnt %s\nconfig: %s\n", Version, path)
+		fmt.Printf("tnt %s\nconfig: %s\n", resolvedVersion(), path)
 	},
 }
 
