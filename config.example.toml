@@ -1,0 +1,53 @@
+[paths]
+state    = "~/.config/tnt/state"
+layouts  = "~/.config/tnt/layouts"
+projects = "~/.config/tnt/projects"
+scripts  = "~/.config/tnt/scripts"
+
+[search]
+max_depth         = 1
+default_workspace = "work"
+
+[[workspace]]
+name = "work"
+dirs = ["~/projects/work/"]
+
+[[workspace]]
+name = "personal"
+dirs = ["~/projects/personal/"]
+
+[theme]
+bg     = "#0D1017"
+fg     = "#BFBDB6"
+gray   = "#555E73"
+blue   = "#39BAE6"
+cyan   = "#95E6CB"
+green  = "#AAD94C"
+orange = "#FF8F40"
+purple = "#D2A6FF"
+red    = "#D95757"
+yellow = "#E6B450"
+dark   = "#141821"
+border = "#1B1F29"
+
+[notify]
+default_ttl   = 30
+default_color = "#E6B450"
+comms_color   = "#73D0FF"
+comms_ttl     = 120
+
+[layout]
+default = "dev"
+
+[branch]
+worktree_dir = ".worktrees"
+
+[session]
+save_restore = false
+neovim       = false
+opencode     = false
+
+[integrations]
+github   = false
+linear   = false
+opencode = false
