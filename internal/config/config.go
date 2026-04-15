@@ -9,13 +9,15 @@ import (
 )
 
 type Config struct {
-	Paths      PathsConfig       `toml:"paths"`
-	Search     SearchConfig      `toml:"search"`
-	Workspaces []WorkspaceConfig `toml:"workspace"`
-	Theme      ThemeConfig       `toml:"theme"`
-	Notify     NotifyConfig      `toml:"notify"`
-	Layout     LayoutConfig      `toml:"layout"`
-	Branch     BranchConfig      `toml:"branch"`
+	Paths        PathsConfig        `toml:"paths"`
+	Search       SearchConfig       `toml:"search"`
+	Workspaces   []WorkspaceConfig  `toml:"workspace"`
+	Theme        ThemeConfig        `toml:"theme"`
+	Notify       NotifyConfig       `toml:"notify"`
+	Layout       LayoutConfig       `toml:"layout"`
+	Branch       BranchConfig       `toml:"branch"`
+	Session      SessionConfig      `toml:"session"`
+	Integrations IntegrationsConfig `toml:"integrations"`
 }
 
 type PathsConfig struct {
@@ -66,6 +68,18 @@ type LayoutConfig struct {
 
 type BranchConfig struct {
 	WorktreeDir string `toml:"worktree_dir"`
+}
+
+type SessionConfig struct {
+	SaveRestore bool `toml:"save_restore"`
+	Neovim      bool `toml:"neovim"`
+	Opencode    bool `toml:"opencode"`
+}
+
+type IntegrationsConfig struct {
+	GitHub   bool `toml:"github"`
+	Linear   bool `toml:"linear"`
+	Opencode bool `toml:"opencode"`
 }
 
 var DefaultConfigPath = filepath.Join(os.Getenv("HOME"), ".config", "tnt", "config.toml")
