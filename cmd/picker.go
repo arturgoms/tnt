@@ -496,18 +496,23 @@ func listWorktreeBranches(repoPath string) []string {
 }
 
 func (m pickerModel) Init() tea.Cmd {
+	cfg := app.Config
 	var cmds []tea.Cmd
-	cmds = append(cmds, loadAgentsCmd)
-	for _, r := range m.allRepos {
-		if r.Path != "" {
-			cmds = append(cmds, loadReviewPRsCmd(r.Path))
-			break
+	if cfg.Integrations.Opencode {
+		cmds = append(cmds, loadAgentsCmd)
+	}
+	if cfg.Integrations.GitHub {
+		for _, r := range m.allRepos {
+			if r.Path != "" {
+				cmds = append(cmds, loadReviewPRsCmd(r.Path))
+				break
+			}
+		}
+		if repo := m.selectedRepo(); repo != nil && repo.Path != "" {
+			cmds = append(cmds, loadPRsCmd(repo.Name, repo.Path))
 		}
 	}
-	if repo := m.selectedRepo(); repo != nil && repo.Path != "" {
-		cmds = append(cmds, loadPRsCmd(repo.Name, repo.Path))
-	}
-	if m.linearAPIKey != "" {
+	if cfg.Integrations.Linear && m.linearAPIKey != "" {
 		m.linearLoading = true
 		cmds = append(cmds, loadLinearCmd(m.linearAPIKey, m.allRepos))
 	}
@@ -1269,7 +1274,7 @@ func (m pickerModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		}
-		if repo.SavedWindows > 0 {
+		if repo.SavedWindows > 0 && app.Config.Session.SaveRestore {
 			m.state = stateRestore
 			return m, nil
 		}
@@ -1312,7 +1317,9 @@ func (m pickerModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !repo.HasSession {
 			return m, nil
 		}
-		session.Save(app.Config, repo.Name)
+		if app.Config.Session.SaveRestore {
+			session.Save(app.Config, repo.Name)
+		}
 		if repo.Name == m.currentSession {
 			next := m.nextSession()
 			if next != "" {
@@ -1548,7 +1555,7 @@ func (m pickerModel) updatePR(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *pickerModel) ensureReviewPRCache() tea.Cmd {
-	if len(m.allRepos) == 0 {
+	if !app.Config.Integrations.GitHub || len(m.allRepos) == 0 {
 		return nil
 	}
 	if m.reviewPRsLoaded && !m.reviewPRsLoadedAt.IsZero() && time.Since(m.reviewPRsLoadedAt) < reviewPRCacheTTL {
@@ -1916,11 +1923,12 @@ func (m pickerModel) renderGithubSection(width, maxH int, active bool) string {
 	lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(titleColor)).Padding(0, 1).Render("github"))
 	lines = append(lines, "  "+lipgloss.NewStyle().Foreground(lipgloss.Color(titleColor)).Render("review requested"))
 
-	if !m.reviewPRsLoaded && m.reviewPRsLoading {
+	if !app.Config.Integrations.GitHub {
+		lines = append(lines, "    "+lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Gray)).Render("github integration is off"))
+	} else if !m.reviewPRsLoaded && m.reviewPRsLoading {
 		lines = append(lines, "    "+lipgloss.NewStyle().Foreground(lipgloss.Color(textColor)).Render("loading..."))
 		return strings.Join(lines, "\n")
-	}
-	if len(m.reviewPRs) == 0 {
+	} else if len(m.reviewPRs) == 0 {
 		lines = append(lines, "    "+lipgloss.NewStyle().Foreground(lipgloss.Color(textColor)).Render("none"))
 	} else {
 		limit := maxH - len(lines)
@@ -1949,19 +1957,22 @@ func (m pickerModel) renderGithubSection(width, maxH int, active bool) string {
 		}
 	}
 
-	if m.linearAPIKey != "" {
-		lines = append(lines, "")
-		lines = append(lines, "  "+lipgloss.NewStyle().Foreground(lipgloss.Color(titleColor)).Render("linear"))
-		if m.linearLoading && !m.linearLoaded {
-			lines = append(lines, "    "+lipgloss.NewStyle().Foreground(lipgloss.Color(textColor)).Render("loading..."))
-			return strings.Join(lines, "\n")
-		}
-		if len(m.linearIssues) == 0 {
-			lines = append(lines, "    "+lipgloss.NewStyle().Foreground(lipgloss.Color(textColor)).Render("none"))
-			return strings.Join(lines, "\n")
-		}
+	lines = append(lines, "")
+	lines = append(lines, "  "+lipgloss.NewStyle().Foreground(lipgloss.Color(titleColor)).Render("linear"))
+	if !app.Config.Integrations.Linear {
+		lines = append(lines, "    "+lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Gray)).Render("linear integration is off"))
+		return strings.Join(lines, "\n")
+	}
+	if m.linearLoading && !m.linearLoaded {
+		lines = append(lines, "    "+lipgloss.NewStyle().Foreground(lipgloss.Color(textColor)).Render("loading..."))
+		return strings.Join(lines, "\n")
+	}
+	if len(m.linearIssues) == 0 {
+		lines = append(lines, "    "+lipgloss.NewStyle().Foreground(lipgloss.Color(textColor)).Render("none"))
+		return strings.Join(lines, "\n")
+	}
 
-		for i, issue := range m.linearIssues {
+	for i, issue := range m.linearIssues {
 			if len(lines) >= maxH {
 				break
 			}
@@ -2031,7 +2042,6 @@ func (m pickerModel) renderGithubSection(width, maxH int, active bool) string {
 				}
 			}
 		}
-	}
 
 	return strings.Join(lines, "\n")
 }
@@ -2450,12 +2460,15 @@ func (m pickerModel) renderTodoSection(maxH int, dimmed ...bool) string {
 
 func (m pickerModel) renderAgentSection(maxH int, dimmed ...bool) string {
 	isDimmed := len(dimmed) > 0 && dimmed[0]
+	titleColor := m.theme.Blue
+	if isDimmed {
+		titleColor = m.theme.Gray
+	}
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(titleColor)).Padding(0, 1).Render("agents")
+	if !app.Config.Integrations.Opencode {
+		return title + "\n" + lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Gray)).Render("  opencode integration is off")
+	}
 	if len(m.agentList) == 0 {
-		titleColor := m.theme.Blue
-		if isDimmed {
-			titleColor = m.theme.Gray
-		}
-		title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(titleColor)).Padding(0, 1).Render("agents")
 		loading := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Gray)).Render("  loading...")
 		return title + "\n" + loading
 	}
@@ -2473,7 +2486,7 @@ func (m pickerModel) renderAgentSection(maxH int, dimmed ...bool) string {
 	if idle > 0 {
 		counts = append(counts, fmt.Sprintf("%d idle", idle))
 	}
-	titleColor := m.theme.Blue
+	titleColor = m.theme.Blue
 	if isDimmed {
 		titleColor = m.theme.Gray
 	}
@@ -2540,6 +2553,12 @@ func (m pickerModel) renderPlanSection(maxH int, dimmed ...bool) string {
 		Render("plans"))
 	lines = append(lines, "")
 
+	if !app.Config.Integrations.Opencode {
+		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Gray)).Render("  opencode integration is off"))
+		lines = append(lines, "")
+		return strings.Join(lines, "\n")
+	}
+
 	if len(m.planList) == 0 {
 		noData := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Gray)).Render("  no tasks")
 		lines = append(lines, noData)
@@ -2572,21 +2591,23 @@ func (m pickerModel) renderPlanSection(maxH int, dimmed ...bool) string {
 
 func (m pickerModel) renderPRSection(maxH int, dimmed ...bool) string {
 	isDimmed := len(dimmed) > 0 && dimmed[0]
+	titleColor := m.theme.Blue
+	if isDimmed {
+		titleColor = m.theme.Gray
+	}
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(titleColor)).Padding(0, 1).Render("pull requests")
+	if !app.Config.Integrations.GitHub {
+		return title + "\n" + lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Gray)).Render("  github integration is off")
+	}
 	repo := m.selectedRepo()
 	if repo == nil || maxH < 2 {
-		titleColor := m.theme.Blue
-		if isDimmed {
-			titleColor = m.theme.Gray
-		}
-		title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(titleColor)).Padding(0, 1).Render("pull requests")
 		return title
 	}
 	if m.prRepo != repo.Name || len(m.prList) == 0 {
-		titleColor := m.theme.Blue
+		titleColor = m.theme.Blue
 		if isDimmed {
 			titleColor = m.theme.Gray
 		}
-		title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(titleColor)).Padding(0, 1).Render("pull requests")
 		msg := "  loading..."
 		if m.prRepo == repo.Name && !m.prLoading {
 			msg = "  no PRs"
@@ -2596,7 +2617,7 @@ func (m pickerModel) renderPRSection(maxH int, dimmed ...bool) string {
 	}
 	var lines []string
 
-	titleColor := m.theme.Blue
+	titleColor = m.theme.Blue
 	if isDimmed {
 		titleColor = m.theme.Gray
 	}
@@ -2710,6 +2731,10 @@ func (m pickerModel) ensurePlanCacheForSelected() pickerModel {
 		m.planList = cached
 		return m
 	}
+	if !app.Config.Integrations.Opencode {
+		m.planRepo = repo.Name
+		return m
+	}
 	loaded := plans.LoadForRepo(m.tasksDir, repo.Name)
 	m.planCache[repo.Name] = loaded
 	m.planRepo = repo.Name
@@ -2742,6 +2767,9 @@ func (m pickerModel) ensurePRCacheForSelected() (pickerModel, tea.Cmd) {
 		return m, nil
 	}
 
+	if !app.Config.Integrations.GitHub {
+		return m, nil
+	}
 	m.prLoadingSet[repo.Name] = true
 	return m, loadPRsCmd(repo.Name, repo.Path)
 }
@@ -2770,8 +2798,10 @@ func runPicker() {
 		m.list.SetItems(m.rebuildListItems())
 	}
 	m.todoGroups = todoGroups
-	m.linearAPIKey = linear.LoadAPIKey()
-	m.linearLoading = m.linearAPIKey != ""
+	if cfg.Integrations.Linear {
+		m.linearAPIKey = linear.LoadAPIKey()
+		m.linearLoading = m.linearAPIKey != ""
+	}
 	m = m.ensurePlanCacheForSelected()
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	result, err := p.Run()
@@ -2886,7 +2916,7 @@ func runPicker() {
 
 	createSession(repo.Name, repo.Path)
 
-	if repo.SavedWindows > 0 {
+	if repo.SavedWindows > 0 && cfg.Session.SaveRestore {
 		if err := session.Restore(cfg, repo.Name, repo.Path); err != nil {
 			fmt.Fprintf(os.Stderr, "restore failed: %v\n", err)
 		}

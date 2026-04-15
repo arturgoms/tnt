@@ -48,6 +48,13 @@ func runStatus() {
 
 	now := time.Now().Unix()
 
+	if !cfg.Integrations.Opencode {
+		if n := notifyRead(stateDir); n != "" {
+			fmt.Printf(" %s ", n)
+		}
+		return
+	}
+
 	detected := agents.Detect("")
 
 	agentWindows := map[string]bool{}
