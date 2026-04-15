@@ -71,6 +71,8 @@ func init() {
 	// top-level
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(diffCmd)
+	rootCmd.AddCommand(installCmd)
+	rootCmd.AddCommand(doctorCmd)
 }
 
 func Execute() {
