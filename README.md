@@ -9,8 +9,14 @@ Built with [bubbletea](https://github.com/charmbracelet/bubbletea), [lipgloss](h
 ## Quick Start
 
 ```bash
-# build and install
+# build and install the binary
 make install
+
+# set up ~/.config/tnt with config, layouts, and scripts
+tnt install
+
+# verify dependencies and configuration
+tnt doctor
 
 # open the main TUI
 tnt
@@ -20,9 +26,6 @@ tnt worktree
 
 # create a window from a layout
 tnt worktree layout
-
-# save the current tmux session state
-tnt session save
 ```
 
 ## Core Concepts
@@ -156,6 +159,8 @@ A reference config is installed at `~/.config/tnt/projects/example/config.json` 
 | `tnt session notify ...` | Send/read/clear notifications |
 | `tnt session status` | Print tmux status segment |
 | `tnt version` | Print version and config path |
+| `tnt install` | Set up config directory, layouts, scripts, and example files |
+| `tnt doctor` | Check system dependencies and configuration |
 
 ## Tmux Setup
 
