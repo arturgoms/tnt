@@ -1,471 +1,229 @@
 # tnt
 
-Go TUI + CLI for tmux-native agent orchestration. Manages sessions, worktrees, AI agents, todos, plans, pull requests, and Linear issues.
+`tnt` is a wrapper around tmux for managing multiple repositories as sessions, multiple worktrees as windows, and reusable layouts as pane arrangements.
+
+The core product is the TUI and CLI for session, worktree, and layout management. Integrations like opencode, Linear, GitHub CLI, and Neovim are optional enhancements.
 
 Built with [bubbletea](https://github.com/charmbracelet/bubbletea), [lipgloss](https://github.com/charmbracelet/lipgloss), and [cobra](https://github.com/spf13/cobra).
 
-## Build
+## Quick Start
 
 ```bash
-make install    # builds and copies to ~/go/bin/tnt
+# build and install
+make install
+
+# open the main TUI
+tnt
+
+# open the worktree picker directly
+tnt worktree
+
+# create a window from a layout
+tnt worktree layout
+
+# save the current tmux session state
+tnt session save
 ```
 
-## Code Structure
+## Core Concepts
 
-```
-tnt/
-├── main.go                         # entry point
-├── cmd/                            # CLI commands + TUI views
-│   ├── root.go                     # cobra command tree
-│   ├── picker.go                   # main TUI (repo picker + dashboard)
-│   ├── todo.go                     # todo TUI model (embedded in picker)
-│   ├── todocli.go                  # todo CLI subcommands (add/toggle/delete/etc)
-│   ├── agent.go                    # agent roster TUI model (embedded in picker)
-│   ├── branch.go                   # branch/worktree picker TUI model
-│   ├── layout.go                   # layout picker TUI model
-│   ├── run.go                      # service manager + worktree picker
-│   ├── plan.go                     # plan update + inbox + cross-agent alerts
-│   ├── plans.go                    # plan/task progress TUI model (embedded in picker)
-│   ├── prs.go                      # pull request TUI model (embedded in picker)
-│   ├── close.go                    # worktree close logic
-│   ├── kill.go                     # session kill (save + switch + kill)
-│   ├── save.go                     # session save command
-│   ├── status.go                   # tmux status bar segment
-│   └── notify.go                   # TTL-based notification system
-└── internal/                       # shared packages
-    ├── agents/agents.go            # agent detection (scan tmux panes)
-    ├── config/config.go            # TOML config loader
-    ├── git/git.go                  # git helpers
-    ├── linear/linear.go            # Linear API client (assigned issues + worktree matching)
-    ├── plans/plans.go              # opencode task progress reader (T-*.json files)
-    ├── prs/prs.go                  # GitHub PR + check-run loader (gh CLI)
-    ├── recents/recents.go          # recently opened repos list
-    ├── scanner/scanner.go          # repo scanner (workspaces, git info)
-    ├── session/session.go          # session save/restore (nvim, opencode)
-    ├── theme/theme.go              # ayu-dark color palette
-    ├── tmux/tmux.go                # tmux command wrappers
-    ├── todos/todos.go              # todo CRUD + hierarchical grouping
-    ├── tui/app.go                  # App struct (Config + Theme)
-    ├── tui/keys.go                 # shared key bindings
-    └── worktree/worktree.go        # worktree management (create, jump, layout)
-```
+### Sessions
 
-## Package Reference
+Each repository is managed as a tmux session.
 
-### `cmd/` — Commands and TUI Views
+### Worktrees
 
-All TUI models follow the bubbletea pattern: `Init()`, `Update(msg) (Model, Cmd)`, `View() string`.
+Each git worktree is managed as a tmux window inside the repository session.
 
-#### `root.go` — Command Tree
+### Layouts
 
-Defines the cobra command hierarchy:
+Layouts are shell scripts that create a pane arrangement for a worktree window.
 
-- `tnt` → `runPicker()` (default), `runTodo()` (with `--todo`)
-- `tnt version` → prints build version and config path
-- `tnt worktree` → `runBranchPicker()` (alias: `tnt wt`)
-  - `tnt worktree close` → `runClose()`
-  - `tnt worktree layout` → `runLayoutPicker()`
-  - `tnt worktree run` → `runRunWindow()`
-- `tnt agent` → `runAgentRoster()`
-  - `tnt agent jump` → `runAgentJump()`
-  - `tnt agent cycle` → `runAgentCycle()`
-- `tnt todo` → `runTodo()`
-  - `tnt todo add/toggle/delete/edit/list/get/cron`
-- `tnt plan`
-  - `tnt plan update` → `runPlanUpdate()`
-  - `tnt plan inbox` → `runPlanInbox()`
-  - `tnt plan open` → stub
-  - `tnt plan dashboard` → stub
-- `tnt session`
-  - `tnt session save` → `runSave()` (in save.go)
-  - `tnt session kill` → `runSessionKill()`
-  - `tnt session notify` → `runNotify()`
-  - `tnt session status` → `runStatus()`
-- `tnt diff` → stub (actual diff browsing is handled by `diff-view.sh`)
+### Panes
 
-#### `picker.go` — Main TUI
+Panes are just tmux panes. `tnt` can open shells, editors, service panes, or other tools inside them, but those tools are not required for the main TUI to work.
 
-The central view. Manages multiple states:
+## Core Workflow
 
-```
-stateBrowse        — repo list + dashboard (default)
-stateDetail        — drill-in to windows/branches
-stateRestore       — restore prompt for saved sessions
-stateRepoContext   — per-repo panel: plan tasks + PRs for selected repo
-stateOverview      — global panel: todos + agents + review PRs + Linear issues
-stateBranch        — embedded branch picker
-stateLayout        — embedded layout picker
-stateNewSession    — new session name input
-stateNewSessionGit — git init prompt
+### Main TUI
+
+Run `tnt` to open the main picker.
+
+Core behavior:
+- browse repositories
+- switch to an existing tmux session
+- restore a saved session
+- open the worktree picker for the selected repo
+- open the layout picker for the selected repo
+
+### Worktree Management
+
+`tnt worktree` opens the branch/worktree picker.
+
+Supported flows:
+- jump to an existing worktree window
+- open an existing worktree on disk
+- create a new worktree from a branch
+- create a new branch and worktree
+- close worktree windows with `tnt worktree close`
+
+### Layouts
+
+`tnt worktree layout` picks a layout and creates a new window for the current worktree.
+
+Layouts are bash scripts in `layouts/` and receive:
+
+```bash
+layout.sh <workdir> <session> <branch> [after_wid] [color]
 ```
 
-**Key types:**
-- `pickerModel` — main model holding all state
-- `tmuxContext` — detected once at startup (session, worktree, workdir, branch)
-- `repoItem` — list item wrapping `scanner.Repo`
+### Services
 
-**Tab cycle:** `tab` cycles through three focus modes:
-```
-stateBrowse → stateRepoContext → stateOverview → stateBrowse
-```
+`tnt worktree run` manages project services for the current worktree.
 
-**`stateRepoContext`** — right panel shows plan task progress and PRs for the currently
-selected repo. Both sections load async; focus cycles with `tab` between them.
+Actions:
+- `start`
+- `stop`
+- `restart`
+- `switch`
+- `pick`
 
-**`stateOverview`** — right panel shows a global dashboard: todos, agent status, PRs
-where your review is requested, and Linear issues assigned to you. All data loads async
-with caching (`prCacheTTL = 60s`, `reviewPRCacheTTL = 60s`, `linearCacheTTL = 120s`).
+### Session Persistence
 
-**Embedded views:** Todo, agent, plan, and PR models are held as fields on `pickerModel`.
-When entering a panel state, the repo list dims and the right panel shows the embedded
-model's `View()`. The `wantsBack` flag signals return to browse.
+`tnt session save` saves the current tmux session state.
 
-**Dashboard sections (stateOverview):**
-- **Todos** — grouped by repo/worktree
-- **Agents** — running/waiting/idle status with colored icons
-- **Review PRs** — PRs where `@me` review is requested (via `gh` CLI)
-- **Linear issues** — your assigned in-progress/todo issues with worktree match indicators
+`tnt session kill` saves the session, switches away, and kills it.
 
-**Dashboard sections (stateRepoContext):**
-- **Plan tasks** — opencode task progress for the selected repo, grouped by branch
-- **Pull requests** — your open PRs for the selected repo, expandable to show CI checks
+`tnt session status` renders a status segment for tmux.
 
-**Workspace cycling:** `w` key cycles through workspace names. `rebuildListItems()` filters
-inactive repos by workspace. Active sessions always show regardless.
+`tnt session notify` sends and manages tmux notifications.
 
-**Delegate management:** `makeDimDelegate()` and `makeActiveDelegate()` return styled
-list delegates. Applied via `m.list.SetDelegate()` in state transition methods.
+## Core Commands
 
-**Column widths:**
-- `width < 80`: single column
-- `80 ≤ width ≤ 120`: 1/3 list, 2/3 right panel
-- `width > 120`: 1/4 list, ~37% mid-panel, ~38% right panel
+| Command | Description |
+|---|---|
+| `tnt` | Main repo/session picker |
+| `tnt worktree` | Branch and worktree picker |
+| `tnt worktree close [branch]` | Close worktree windows and cleanup |
+| `tnt worktree layout` | Pick a layout and create a new window |
+| `tnt worktree run [action]` | Manage services for a worktree |
+| `tnt session save` | Save current session state |
+| `tnt session kill [name]` | Save and kill a tmux session |
+| `tnt session notify ...` | Send/read/clear notifications |
+| `tnt session status` | Print tmux status segment |
+| `tnt version` | Print version and config path |
 
-#### `todo.go` — Todo TUI Model
+## Tmux Setup
 
-Full bubbletea model with 7 states:
+### Required settings
 
-```
-todoList          — main list with cursor
-todoAddText       — text input for new todo
-todoAddProject    — project input (after text)
-todoEditPicker    — field selector for edit
-todoEditValue     — value input for edit
-todoConfirmDelete — y/n confirmation
-todoRemind        — reminder time input
+These two lines are the only hard requirements. Without them tnt cannot reliably name or look up windows.
+
+```bash
+# tnt names windows explicitly — prevent tmux from overriding them
+setw -g automatic-rename off
+set  -g allow-rename off
 ```
 
-**Hierarchical grouping:** Todos grouped by repo → worktree using `todos.RepoGroup`.
-Repo headers and worktree sub-headers are selectable rows.
+Add them to your `~/.tmux.conf`.
 
-**Embedded mode:** When `embedded=true`, `esc` sets `wantsBack=true` instead of quitting.
-Non-key messages (textinput blink) forwarded in the `default` switch case.
+### Minimum version
 
-#### `agent.go` — Agent Roster
+`tnt` uses `display-popup -E` for its TUI overlays. This requires **tmux 3.2 or later**.
 
-Lists detected opencode agents with status icons. Supports embedded mode.
-Agent detection runs async — `newAgentModelWithList()` takes pre-loaded agents
-from the dashboard, `loadAgentRefreshCmd` refreshes in background.
+Check your version:
 
-#### `branch.go` — Branch Picker
-
-Lists worktrees (jump/open) and branches (checkout/create). Entries load async via
-`loadBranchEntriesCmd`. `handleBranchDeferred()` runs after TUI exits to execute
-tmux operations (jump, create worktree, run layout).
-
-#### `plans.go` — Plan/Task Progress TUI Model
-
-Embedded bubbletea model displaying opencode task progress per branch for the selected
-repo. Data comes from `internal/plans` (reads `~/.config/opencode/tasks/{repo}/T-*.json`).
-
-**States:** flat list of `BranchProgress` entries, expandable to show individual tasks.
-
-**Keys:**
-
-| Key | Action |
-|-----|--------|
-| `↑/↓` | Navigate branches |
-| `→` | Expand branch to show task list |
-| `←` | Collapse |
-| `↵` | Expand (first press) / jump to branch (second press) |
-| `r` | Refresh |
-| `esc` | Back |
-
-**Task status icons:**
-
-| Icon | Color | Status |
-|------|-------|--------|
-| `✓` | Green | Completed |
-| `◑` | Yellow | In progress |
-| `○` | Gray | Pending |
-
-Progress bar uses block characters: `███░░░░░░░ 3/10`.
-
-#### `prs.go` — Pull Request TUI Model
-
-Embedded bubbletea model displaying pull requests for the selected repo, loaded via
-the `gh` CLI. Shows two sections: "my PRs" and "review requested". PRs are expandable
-to show per-check-run CI status, loaded on demand.
-
-**Keys:**
-
-| Key | Action |
-|-----|--------|
-| `↑/↓` | Navigate |
-| `→` | Expand PR → load and show check runs |
-| `←` | Collapse |
-| `↵` | Jump to PR (opens via `gh`) |
-| `r` | Refresh |
-| `esc` | Back |
-
-**Check run icons:**
-
-| Icon | Color | Meaning |
-|------|-------|---------|
-| `✓` | Green | All checks passed |
-| `✗` | Red | One or more checks failed |
-| `◑` | Yellow | In progress |
-
-**Review decision icons:**
-
-| Icon | Label | Color | Meaning |
-|------|-------|-------|---------|
-| `✓` | approved | Green | APPROVED |
-| `●` | changes | Orange | CHANGES_REQUESTED |
-| `⏳` | review | Gray | REVIEW_REQUIRED |
-| `◌` | draft | Gray | Draft PR |
-
-#### `plan.go` — Plan System
-
-**`runPlanUpdate()`**: Parses flags, marks plan steps complete in plan.md,
-appends structured entries to comms.md, fires cross-agent alerts.
-
-**`alertAgent()`**: Finds target repo's opencode pane via `agents.Detect()`,
-sends message via tmux `send-keys`.
-
-**`runPlanInbox()`**: Parses comms.md for `**Question for {repo}**:` and
-`**Blocked on {repo}**:` entries targeting the current repo.
-
-#### `status.go` — Tmux Status Bar
-
-Called every few seconds by tmux. Detects agents, tracks state transitions
-via timestamp files, fires notifications on running→waiting/done transitions,
-outputs formatted segment string.
-
-#### `run.go` — Service Manager
-
-Manages project services defined in `projects/{repo}/config.json`.
-
-**`projectConfig` struct:**
-
-```go
-type projectConfig struct {
-    DefaultLayout string    `json:"default_layout"`
-    Env           string    `json:"env"`
-    Hooks         hooks     `json:"hooks"`
-    Services      []service `json:"services"`
-}
-
-type hooks struct {
-    PostCreate []string `json:"post_create"`
-    PreDelete  []string `json:"pre_delete"`
-    PostDelete []string `json:"post_delete"`
-}
-
-type service struct {
-    Name  string   `json:"name"`
-    Run   string   `json:"run"`
-    Cwd   string   `json:"cwd"`
-    Setup []string `json:"setup"`
-}
+```bash
+tmux -V
 ```
 
-Hooks run as shell commands via `sh -c`. `setup` commands run before each service starts.
+### Recommended bindings
 
-**Environment variables available in `setup` and `run` commands:**
+All bindings are optional and fully configurable. This is a working example:
 
-| Variable | Value | Notes |
-|----------|-------|-------|
-| `TNT_MAIN_ROOT` | Absolute path to the repo root | Always points to the main checkout regardless of worktree depth. Use instead of `../../..` relative paths. |
+```bash
+# Main repo/session picker
+bind-key j display-popup -E -w 80% -h 80% "tnt"
+bind-key s display-popup -E -w 80% -h 80% "tnt"
 
-Example — copying `.env` from the repo root into a nested worktree:
-```json
-{ "name": "backend", "run": "make run", "cwd": ".", "setup": ["cp $TNT_MAIN_ROOT/.env ."] }
+# Branch/worktree picker
+bind-key b display-popup -E -w 60% -h 60% "tnt worktree"
+
+# Layout picker
+bind-key c display-popup -E -w 50% -h 40% "tnt worktree layout"
+
+# Service manager
+bind-key R display-popup -E -w 60% -h 40% "tnt worktree run pick"
+
+# Close current worktree
+bind-key C-s run-shell "tnt worktree close"
+
+# Save and kill session
+bind-key q   run-shell "tnt session kill"
+bind-key C-q run-shell "tnt session kill"
+
+# Todo manager
+bind-key t display-popup -E -w 60% -h 50% "tnt todo"
 ```
 
-#### `session/session.go` — Session Persistence
+### Status bar integration
 
-Called by `runSessionKill()`, `runSave()`, and `runClose()`.
+`tnt session status` outputs a status segment for tmux notifications and (optionally) agent state. Add it to your `status-right`:
 
-**Pane types:** `PaneNvim`, `PaneOpencode`, `PaneShell`, `PaneService`
-
-**Process tree walking:** `detectNvimSocket()` and `detectOpencodeSession()` walk
-pane PID → children → grandchildren to find socket paths and session IDs.
-Falls back to querying opencode's SQLite DB by matching pane cwd to session directory.
-
-**Save flow per nvim pane:**
-1. Send `:Neotree close` (prevents restore issues)
-2. Send `:mksession! {path}`
-3. Record socket path
-
-**Restore flow:**
-- nvim: `nvim --listen {fresh_socket} -S {session.vim}`
-- opencode: `NVIM_SOCKET_PATH={socket} opencode --port -s {session_id}`
-- shell: `cd {cwd}`
-
-Socket paths are always computed fresh on restore — never uses stale saved paths.
-
-### `internal/` — Shared Packages
-
-#### `agents/` — Agent Detection
-
-`Detect(sessionFilter)` scans all tmux panes, finds opencode processes (direct command
-or child process via `pgrep`), classifies status by reading pane content:
-- **running**: contains braille spinners or "esc to interrupt"
-- **waiting**: contains y/n prompts, approve/allow, numbered selections
-- **idle**: everything else
-
-#### `config/` — Configuration
-
-Loads `config.toml` with path expansion (`~` → `$HOME`). Key structs:
-
-```go
-type Config struct {
-    Paths      PathsConfig
-    Search     SearchConfig
-    Workspaces []WorkspaceConfig
-    Theme      ThemeConfig
-    Notify     NotifyConfig
-    Layout     LayoutConfig
-    Branch     BranchConfig
-}
+```bash
+set -g status-interval 2
+set -g status-right "#(tnt session status) ... "
 ```
 
-- `PathsConfig` — plans, skills, state, layouts, projects, scripts
-- `SearchConfig` — max_depth, default_workspace
-- `WorkspaceConfig` — name + dirs[]
-- `ThemeConfig` — ayu-dark hex colors (bg, fg, gray, blue, cyan, green, orange, purple, red, yellow, dark, border)
-- `NotifyConfig` — default_ttl, default_color, comms_color, comms_ttl
-- `LayoutConfig` — default layout name
-- `BranchConfig` — worktree_dir (default: `.worktrees`)
+### Window status with worktree colors and agent state
 
-Default config path: `~/.config/tnt/config.toml`.
+`tnt` sets two custom window options that you can reference in your status bar:
 
-#### `linear/` — Linear API Client
+- `@worktree_color` — a color string assigned per worktree branch
+- `@agent_state` — current agent status (`running`, `waiting`, `idle`)
 
-Fetches your assigned Linear issues and cross-references them with local git worktrees.
+Example window status format using both:
 
-**API key resolution** (in order):
-1. `~/.config/tnt/.env` — line matching `LINEAR_KEY=<value>` (with optional `export` prefix and quotes)
-2. `LINEAR_API_KEY` environment variable
-
-**`LoadMyIssues(apiKey)`**: Queries the Linear GraphQL API for issues assigned to the
-viewer with state type `started` or `unstarted`. Returns up to 30 issues sorted by:
-state name (`In Progress → In Review → Todo`), then Linear priority (1=urgent first),
-then identifier.
-
-**`MatchWorktrees(issues, repos)`**: For each issue, checks all repo worktrees for a
-branch name containing the issue identifier (e.g., `COU-112`). Attaches task progress
-from `~/.config/opencode/tasks/{repo}/T-*.json` when a match is found.
-
-**`Issue` fields:** Identifier, Title, StateType, StateName, Priority, URL, TeamKey
-
-**`IssueWithWorktrees` fields:** embeds Issue + `[]TicketWorktree` (Repo, Branch, Done, Total, HasTasks)
-
-#### `plans/` — Opencode Task Progress Reader
-
-Reads task progress files written by opencode agents. **This is distinct from the
-markdown-based `plan.md`/`comms.md` system used by `tnt plan update`.**
-
-**Storage:** `~/.config/opencode/tasks/{repo}/T-*.json`
-
-Each file is a JSON `Task`:
-```json
-{
-  "id": "T-abc123",
-  "subject": "Implement login flow",
-  "status": "completed",
-  "metadata": { "branch": "feat/auth" }
-}
+```bash
+setw -g window-status-format \
+  "#[fg=#{?#{@worktree_color},#{@worktree_color},default}] #I #W \
+#{?#{==:#{@agent_state},running}, #[fg=green]◑,\
+#{?#{==:#{@agent_state},waiting}, #[fg=yellow]●,}} "
 ```
 
-Status values: `completed`, `in_progress`, `pending`, `deleted` (deleted tasks are excluded from counts).
+These are optional — the TUI works without them. They only affect what you see in the tmux status bar.
 
-**`LoadForRepo(tasksDir, repo)`**: Reads all `T-*.json` files for a repo, groups by
-branch (from `metadata.branch`), computes done/total counts per branch.
+### Known conflicts
 
-**`BranchProgress`**: `{ Branch, Tasks []Task, Done, Total }`
+**tmux-resurrect / tmux-continuum**
 
-#### `prs/` — GitHub PR + Check-Run Loader
+If you use `tmux-resurrect` or `tmux-continuum`, leave tnt's session save/restore disabled (it is off by default). Only enable it if you are not using those plugins.
 
-Wraps the `gh` CLI to load pull request data. Requires `gh` to be authenticated.
+```toml
+# config.toml — choose one approach
 
-- **`LoadForRepo(repoPath)`** — lists your own open PRs (`--author @me`)
-- **`LoadReviewRequested(repoPath)`** — lists PRs where your review is requested
-- **`LoadChecksForPR(repoPath, number)`** — loads check run details for a specific PR
-- **`LoadNotifications()`** — fetches GitHub notifications (currently unused in TUI)
-- **`ChecksSummary(pr)`** → `(passed, failed, pending int)`
-- **`ChecksIcon(passed, failed, pending)`** → `(icon, color string)`
-- **`ReviewIcon(decision, isDraft)`** → `(icon, label, color string)`
+# Option A: use tnt session save/restore
+[session]
+save_restore = true
 
-#### `scanner/` — Repo Scanner
-
-`Scan()` walks workspace dirs, finds git repos, detects active tmux sessions,
-collects git info (branch, worktree count, last activity from `.git/index` mtime).
-Orphan sessions (active tmux sessions not in any workspace) are detected and
-resolved to their workspace by matching session path.
-
-**No subprocess overhead:** Branch detection reads `.git/HEAD`, activity uses
-`os.Stat` on `.git/index`. Zero git commands during scan.
-
-#### `todos/` — Todo CRUD
-
-JSON-based storage at `state/todos.json`.
-
-**Hierarchical grouping:** `GroupByRepo()` returns `[]RepoGroup`, each containing
-`[]WorktreeGroup` with active and done todos. `SplitProject()` splits
-`"counterpart/int-112"` into repo + worktree.
-
-**Atomic writes:** `Save()` writes to temp file then renames.
-
-#### `worktree/` — Worktree Management
-
-`RepoContext` holds git roots, session name, and config paths.
-`ListEntries()` returns sorted entries: jump (active), open (on disk),
-main, checkout (remote), local.
-
-**Scaffolding on create:** `CreateWorktree()` also creates plan directory,
-comms.md, and project config.json.
-
-`OpenWorktreeWindow()` runs layout scripts. `JumpToWorktree()` does
-`select-window` + `switch-client` to actually move the user.
-
-#### `recents/` — Recently Opened
-
-Simple JSON list at `state/recents.json`. `Add()` moves the name to front,
-caps at 20 entries. Used by picker for sorting active sessions and by
-kill/close for finding the next session to switch to.
-
-#### `tmux/` — Tmux Wrappers
-
-Thin wrappers around `exec.Command("tmux", ...)`:
-- `Run()`, `ListWindows()`, `ListPanes()`
-- `NewWindow()`, `SetWindowOption()`
-- `SessionName()`, `HasSession()`
-
-#### `theme/` — Color Palette
-
-Ayu-dark colors loaded from config. All TUI views reference `theme.Blue`,
-`theme.Green`, etc. as `lipgloss.Color` values. Full palette: `BG`, `FG`,
-`Gray`, `Blue`, `Cyan`, `Green`, `Orange`, `Purple`, `Red`, `Yellow`, `Dark`, `Border`.
+# Option B: use tmux-resurrect or tmux-continuum (default)
+[session]
+save_restore = false
+```
 
 ## Configuration
 
-Full `config.toml` structure:
+Default config path:
+
+```bash
+~/.config/tnt/config.toml
+```
+
+Example structure:
 
 ```toml
 [paths]
-plans    = "~/.config/tnt/plans"       # plan.md / comms.md files
+plans    = "~/.config/tnt/plans"
 skills   = "~/.config/tnt/skills"
 state    = "~/.config/tnt/state"
 layouts  = "~/.config/tnt/layouts"
@@ -482,7 +240,7 @@ dirs = ["~/projects/work/"]
 
 [[workspace]]
 name = "personal"
-dirs = ["~/projects/personal/", "~/.config/"]
+dirs = ["~/projects/personal/"]
 
 [theme]
 bg     = "#0D1017"
@@ -499,25 +257,168 @@ dark   = "#141821"
 border = "#1B1F29"
 
 [notify]
-default_ttl   = 30        # seconds TTL for general notifications
+default_ttl   = 30
 default_color = "#E6B450"
-comms_color   = "#73D0FF" # color for cross-agent comms notifications
+comms_color   = "#73D0FF"
 comms_ttl     = 120
 
 [layout]
-default = "dev"           # default layout name for new worktree windows
+default = "dev"
 
 [branch]
-worktree_dir = ".worktrees" # subdirectory inside repo for git worktrees
+worktree_dir = ".worktrees"
+
+[session]
+save_restore = false  # enable tnt's session save/restore (conflicts with tmux-resurrect)
+neovim       = false  # save/restore neovim sessions (requires save_restore = true)
+opencode     = false  # save/restore opencode sessions (requires save_restore = true)
+
+[integrations]
+github   = false  # load pull requests via gh CLI
+linear   = false  # load Linear issues
+opencode = false  # agent detection, plan alerts, task progress
 ```
 
-### Linear API Key
+## Optional Integrations
 
-To enable the Linear integration, create `~/.config/tnt/.env`:
+These are enhancements. They should not be required for the main TUI to work.
+
+### opencode
+
+Used for agent roster, task progress panels, and plan alerts.
+
+Enable in config:
+
+```toml
+[integrations]
+opencode = true
+```
+
+Related commands: `tnt agent`, `tnt agent jump`, `tnt agent cycle`, `tnt plan ...`
+
+### GitHub CLI
+
+Used for pull request and check-run views. Requires `gh` installed and authenticated.
+
+Enable in config:
+
+```toml
+[integrations]
+github = true
+```
+
+### Linear
+
+Used for assigned-issue panels and worktree matching.
+
+Enable in config:
+
+```toml
+[integrations]
+linear = true
+```
+
+Set your API key:
 
 ```bash
-LINEAR_KEY=lin_api_xxxxxxxxxxxxxxxx
+LINEAR_KEY=lin_api_xxxxxxxxxxxxxxxx  # in ~/.config/tnt/.env
+# or
+export LINEAR_API_KEY=lin_api_xxxxxxxxxxxxxxxx
 ```
 
-Or set the `LINEAR_API_KEY` environment variable. If the key is absent or empty,
-Linear features silently disable — no error is shown.
+### Neovim
+
+Used for richer session save/restore when panes are running `nvim`.
+
+Enable in config:
+
+```toml
+[session]
+save_restore = true
+neovim       = true
+```
+
+### Diff helper tools
+
+The diff viewer is the remaining shell-based piece that has not been ported to Go yet.
+
+These tools are only needed for that legacy diff workflow:
+- `fzf`
+- `delta`
+- `gawk`
+
+## Code Structure
+
+```text
+tnt/
+├── main.go
+├── cmd/
+│   ├── root.go
+│   ├── picker.go
+│   ├── branch.go
+│   ├── layout.go
+│   ├── run.go
+│   ├── close.go
+│   ├── kill.go
+│   ├── save.go
+│   ├── status.go
+│   ├── notify.go
+│   ├── todo.go
+│   ├── todocli.go
+│   ├── agent.go
+│   ├── plan.go
+│   ├── plans.go
+│   └── prs.go
+└── internal/
+    ├── scanner/
+    ├── worktree/
+    ├── session/
+    ├── tmux/
+    ├── config/
+    ├── git/
+    ├── todos/
+    ├── recents/
+    ├── theme/
+    ├── agents/
+    ├── linear/
+    ├── plans/
+    └── prs/
+```
+
+### Core packages
+
+- `internal/scanner` — find repos and active sessions
+- `internal/worktree` — create, list, and jump between worktrees
+- `internal/session` — save and restore tmux session state
+- `internal/tmux` — tmux command wrappers
+- `internal/config` — config loading and path expansion
+- `internal/git` — git helpers
+
+### Optional integration packages
+
+- `internal/agents` — opencode agent detection
+- `internal/linear` — Linear API client
+- `internal/plans` — opencode task progress reader
+- `internal/prs` — GitHub PR loader via `gh`
+
+## Build
+
+```bash
+make install
+```
+
+Requires:
+- Go 1.21+
+- tmux
+- git
+
+Optional tools:
+- nvim
+- opencode
+- sqlite3
+- gh
+
+Optional diff helper tools:
+- fzf
+- delta
+- gawk
