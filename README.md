@@ -282,6 +282,17 @@ type service struct {
 
 Hooks run as shell commands via `sh -c`. `setup` commands run before each service starts.
 
+**Environment variables available in `setup` and `run` commands:**
+
+| Variable | Value | Notes |
+|----------|-------|-------|
+| `TNT_MAIN_ROOT` | Absolute path to the repo root | Always points to the main checkout regardless of worktree depth. Use instead of `../../..` relative paths. |
+
+Example — copying `.env` from the repo root into a nested worktree:
+```json
+{ "name": "backend", "run": "make run", "cwd": ".", "setup": ["cp $TNT_MAIN_ROOT/.env ."] }
+```
+
 #### `session/session.go` — Session Persistence
 
 Called by `runSessionKill()`, `runSave()`, and `runClose()`.
