@@ -138,7 +138,7 @@ func capturePanes(windowID string, cfg *config.Config, sessionName string) []Pan
 		pane := Pane{Cwd: cwd}
 
 		switch {
-		case cmd == "nvim" || cmd == "vim":
+		case cfg.Session.Neovim && (cmd == "nvim" || cmd == "vim"):
 			pane.Type = PaneNvim
 			pane.Socket = detectNvimSocket(pid)
 			if pane.Socket != "" {
@@ -148,7 +148,7 @@ func capturePanes(windowID string, cfg *config.Config, sessionName string) []Pan
 				}
 			}
 
-		case cmd == "opencode":
+		case cfg.Session.Opencode && cmd == "opencode":
 			pane.Type = PaneOpencode
 			pane.NvimSocket = detectEnvVar(pid, "NVIM_SOCKET_PATH")
 			pane.OpencodeSession = detectOpencodeSession(pid, cwd)
@@ -157,7 +157,7 @@ func capturePanes(windowID string, cfg *config.Config, sessionName string) []Pan
 			}
 
 		default:
-			if isOpencode(pid) {
+			if cfg.Session.Opencode && isOpencode(pid) {
 				pane.Type = PaneOpencode
 				pane.NvimSocket = detectEnvVar(pid, "NVIM_SOCKET_PATH")
 				pane.OpencodeSession = detectOpencodeSession(pid, cwd)
@@ -431,22 +431,26 @@ func restoreWithPanes(cfg *config.Config, sessionName string, w Window, workdir 
 
 		switch p.Type {
 		case PaneNvim:
-			nvimCmd := fmt.Sprintf("nvim --listen '%s'", socketPath)
-			if p.SessionFile != "" {
-				if _, err := os.Stat(p.SessionFile); err == nil {
-					nvimCmd += fmt.Sprintf(" -S '%s'", p.SessionFile)
+			if cfg.Session.Neovim {
+				nvimCmd := fmt.Sprintf("nvim --listen '%s'", socketPath)
+				if p.SessionFile != "" {
+					if _, err := os.Stat(p.SessionFile); err == nil {
+						nvimCmd += fmt.Sprintf(" -S '%s'", p.SessionFile)
+					}
+				} else {
+					nvimCmd += " ."
 				}
-			} else {
-				nvimCmd += " ."
+				exec.Command("tmux", "send-keys", "-t", paneID, nvimCmd, "Enter").Run()
 			}
-			exec.Command("tmux", "send-keys", "-t", paneID, nvimCmd, "Enter").Run()
 
 		case PaneOpencode:
-			ocCmd := fmt.Sprintf("NVIM_SOCKET_PATH='%s' opencode --port", socketPath)
-			if p.OpencodeSession != "" {
-				ocCmd = fmt.Sprintf("NVIM_SOCKET_PATH='%s' opencode --port -s %s", socketPath, p.OpencodeSession)
+			if cfg.Session.Opencode {
+				ocCmd := fmt.Sprintf("NVIM_SOCKET_PATH='%s' opencode --port", socketPath)
+				if p.OpencodeSession != "" {
+					ocCmd = fmt.Sprintf("NVIM_SOCKET_PATH='%s' opencode --port -s %s", socketPath, p.OpencodeSession)
+				}
+				exec.Command("tmux", "send-keys", "-t", paneID, ocCmd, "Enter").Run()
 			}
-			exec.Command("tmux", "send-keys", "-t", paneID, ocCmd, "Enter").Run()
 
 		case PaneShell:
 			if p.Cwd != "" && i == 0 {

@@ -69,6 +69,8 @@ func runSessionKill(args []string) {
 		}
 	}
 
-	session.Save(cfg, target)
+	if cfg.Session.SaveRestore {
+		session.Save(cfg, target)
+	}
 	exec.Command("tmux", "kill-session", "-t", target).Run()
 }

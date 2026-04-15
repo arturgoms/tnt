@@ -12,6 +12,10 @@ var saveCmd = &cobra.Command{
 	Use:   "save",
 	Short: "Save current session windows for later restore",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if !app.Config.Session.SaveRestore {
+			fmt.Println("session save_restore is disabled in config")
+			return nil
+		}
 		name, err := tmux.SessionName()
 		if err != nil {
 			return fmt.Errorf("not in a tmux session")
