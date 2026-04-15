@@ -3,6 +3,8 @@ state    = "~/.config/tnt/state"
 layouts  = "~/.config/tnt/layouts"
 projects = "~/.config/tnt/projects"
 scripts  = "~/.config/tnt/scripts"
+plans    = "~/.config/tnt/plans"
+tasks    = "~/.config/opencode/tasks"
 
 [search]
 max_depth         = 1

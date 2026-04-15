@@ -273,6 +273,7 @@ Example structure:
 ```toml
 [paths]
 plans    = "~/.config/tnt/plans"
+tasks    = "~/.config/opencode/tasks"
 skills   = "~/.config/tnt/skills"
 state    = "~/.config/tnt/state"
 layouts  = "~/.config/tnt/layouts"

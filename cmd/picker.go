@@ -1973,75 +1973,75 @@ func (m pickerModel) renderGithubSection(width, maxH int, active bool) string {
 	}
 
 	for i, issue := range m.linearIssues {
+		if len(lines) >= maxH {
+			break
+		}
+
+		icon := "○"
+		iconColor := m.theme.Gray
+		stateLabel := ""
+		switch {
+		case strings.EqualFold(issue.StateName, "In Progress"):
+			icon = "◑"
+			iconColor = m.theme.Yellow
+			stateLabel = "progress"
+		case strings.EqualFold(issue.StateName, "In Review"):
+			icon = "◎"
+			iconColor = m.theme.Cyan
+			stateLabel = "review"
+		case strings.EqualFold(issue.StateType, "started"):
+			icon = "◑"
+			iconColor = m.theme.Yellow
+			stateLabel = strings.ToLower(issue.StateName)
+		default:
+			stateLabel = "todo"
+		}
+
+		titleStr := issue.Title
+		maxTitle := width - 30
+		if maxTitle < 10 {
+			maxTitle = 10
+		}
+		if len(titleStr) > maxTitle {
+			titleStr = titleStr[:maxTitle-3] + "..."
+		}
+
+		stateTag := lipgloss.NewStyle().Foreground(lipgloss.Color(iconColor)).Render(icon + " " + stateLabel)
+		idStr := lipgloss.NewStyle().Foreground(lipgloss.Color(iconColor)).Bold(true).Render(issue.Identifier)
+		titleRender := lipgloss.NewStyle().Foreground(lipgloss.Color(textColor)).Render(titleStr)
+
+		styled := fmt.Sprintf("    %s  %s  %s", stateTag, idStr, titleRender)
+		if active && m.reviewPRsCursor == len(m.reviewPRs)+i {
+			styled = "    " + lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Blue)).Bold(true).Render(fmt.Sprintf("> %s  %s  %s", stateLabel, issue.Identifier, titleStr))
+		}
+		lines = append(lines, styled)
+
+		for _, wt := range issue.Worktrees {
 			if len(lines) >= maxH {
 				break
 			}
-
-			icon := "○"
-			iconColor := m.theme.Gray
-			stateLabel := ""
-			switch {
-			case strings.EqualFold(issue.StateName, "In Progress"):
-				icon = "◑"
-				iconColor = m.theme.Yellow
-				stateLabel = "progress"
-			case strings.EqualFold(issue.StateName, "In Review"):
-				icon = "◎"
-				iconColor = m.theme.Cyan
-				stateLabel = "review"
-			case strings.EqualFold(issue.StateType, "started"):
-				icon = "◑"
-				iconColor = m.theme.Yellow
-				stateLabel = strings.ToLower(issue.StateName)
-			default:
-				stateLabel = "todo"
+			progress := ""
+			if wt.HasTasks {
+				progress = fmt.Sprintf(" %s %d/%d", progressBar(wt.Done, wt.Total, 4), wt.Done, wt.Total)
 			}
+			wtLine := fmt.Sprintf("● %s%s", wt.Repo, progress)
+			lines = append(lines, "        "+lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Green)).Render(wtLine))
 
-			titleStr := issue.Title
-			maxTitle := width - 30
-			if maxTitle < 10 {
-				maxTitle = 10
-			}
-			if len(titleStr) > maxTitle {
-				titleStr = titleStr[:maxTitle-3] + "..."
-			}
-
-			stateTag := lipgloss.NewStyle().Foreground(lipgloss.Color(iconColor)).Render(icon + " " + stateLabel)
-			idStr := lipgloss.NewStyle().Foreground(lipgloss.Color(iconColor)).Bold(true).Render(issue.Identifier)
-			titleRender := lipgloss.NewStyle().Foreground(lipgloss.Color(textColor)).Render(titleStr)
-
-			styled := fmt.Sprintf("    %s  %s  %s", stateTag, idStr, titleRender)
-			if active && m.reviewPRsCursor == len(m.reviewPRs)+i {
-				styled = "    " + lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Blue)).Bold(true).Render(fmt.Sprintf("> %s  %s  %s", stateLabel, issue.Identifier, titleStr))
-			}
-			lines = append(lines, styled)
-
-			for _, wt := range issue.Worktrees {
-				if len(lines) >= maxH {
-					break
-				}
-				progress := ""
-				if wt.HasTasks {
-					progress = fmt.Sprintf(" %s %d/%d", progressBar(wt.Done, wt.Total, 4), wt.Done, wt.Total)
-				}
-				wtLine := fmt.Sprintf("● %s%s", wt.Repo, progress)
-				lines = append(lines, "        "+lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Green)).Render(wtLine))
-
-				linkedPR := m.findPRForRepo(issue.Identifier, wt.Repo)
-				if linkedPR != nil && len(lines) < maxH {
-					prLine := m.formatPRInline(linkedPR)
-					lines = append(lines, "            "+prLine)
-				}
-			}
-
-			if len(issue.Worktrees) == 0 {
-				linkedPR := m.findPRForTicket(issue.Identifier)
-				if linkedPR != nil && len(lines) < maxH {
-					prLine := m.formatPRInline(linkedPR)
-					lines = append(lines, "        "+prLine)
-				}
+			linkedPR := m.findPRForRepo(issue.Identifier, wt.Repo)
+			if linkedPR != nil && len(lines) < maxH {
+				prLine := m.formatPRInline(linkedPR)
+				lines = append(lines, "            "+prLine)
 			}
 		}
+
+		if len(issue.Worktrees) == 0 {
+			linkedPR := m.findPRForTicket(issue.Identifier)
+			if linkedPR != nil && len(lines) < maxH {
+				prLine := m.formatPRInline(linkedPR)
+				lines = append(lines, "        "+prLine)
+			}
+		}
+	}
 
 	return strings.Join(lines, "\n")
 }
@@ -2787,10 +2787,7 @@ func runPicker() {
 	m.allRepos = repos
 	m.recentList = recentList
 	m.currentSession = m.tmux.session
-	homeDir, err := os.UserHomeDir()
-	if err == nil {
-		m.tasksDir = filepath.Join(homeDir, ".config", "opencode", "tasks")
-	}
+	m.tasksDir = cfg.Paths.Tasks
 	m.workspaceNames = scanner.WorkspaceNames(cfg)
 	m.workspace = cfg.Search.DefaultWorkspace
 	if m.workspace != "" {

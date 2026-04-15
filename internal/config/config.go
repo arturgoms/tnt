@@ -22,6 +22,7 @@ type Config struct {
 
 type PathsConfig struct {
 	Plans    string `toml:"plans"`
+	Tasks    string `toml:"tasks"`
 	Skills   string `toml:"skills"`
 	State    string `toml:"state"`
 	Layouts  string `toml:"layouts"`
@@ -108,6 +109,7 @@ func (c *Config) expandPaths() {
 	}
 
 	c.Paths.Plans = expand(c.Paths.Plans)
+	c.Paths.Tasks = expand(c.Paths.Tasks)
 	c.Paths.State = expand(c.Paths.State)
 	c.Paths.Layouts = expand(c.Paths.Layouts)
 	c.Paths.Projects = expand(c.Paths.Projects)
@@ -127,7 +129,8 @@ func (c *Config) expandPaths() {
 func defaults() Config {
 	return Config{
 		Paths: PathsConfig{
-			Plans:    "~/.config/opencode/plans",
+			Plans:    "~/.config/tnt/plans",
+			Tasks:    "~/.config/opencode/tasks",
 			State:    "~/.config/tnt/state",
 			Layouts:  "~/.config/tnt/layouts",
 			Projects: "~/.config/tnt/projects",
