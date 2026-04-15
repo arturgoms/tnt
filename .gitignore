@@ -1,6 +1,7 @@
 tnt
 
 .worktrees
+tnt-config
 tnt-config/
 .sisyphus/
 .opencode/

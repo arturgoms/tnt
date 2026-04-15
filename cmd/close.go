@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/arturgomes/tnt/internal/recents"
+	"github.com/arturgoms/tnt/internal/recents"
 )
 
 func runClose(args []string) {

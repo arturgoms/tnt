@@ -6,8 +6,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/arturgomes/tnt/internal/agents"
-	"github.com/arturgomes/tnt/internal/theme"
+	"github.com/arturgoms/tnt/internal/agents"
+	"github.com/arturgoms/tnt/internal/theme"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"

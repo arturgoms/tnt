@@ -1,8 +1,8 @@
 package tui
 
 import (
-	"github.com/arturgomes/tnt/internal/config"
-	"github.com/arturgomes/tnt/internal/theme"
+	"github.com/arturgoms/tnt/internal/config"
+	"github.com/arturgoms/tnt/internal/theme"
 )
 
 type App struct {

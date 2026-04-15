@@ -3,8 +3,8 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/arturgomes/tnt/internal/session"
-	"github.com/arturgomes/tnt/internal/tmux"
+	"github.com/arturgoms/tnt/internal/session"
+	"github.com/arturgoms/tnt/internal/tmux"
 	"github.com/spf13/cobra"
 )
 

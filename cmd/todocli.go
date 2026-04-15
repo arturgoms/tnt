@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/arturgomes/tnt/internal/todos"
+	"github.com/arturgoms/tnt/internal/todos"
 	"github.com/spf13/cobra"
 )
 

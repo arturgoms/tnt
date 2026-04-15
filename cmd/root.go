@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/arturgomes/tnt/internal/config"
-	"github.com/arturgomes/tnt/internal/tui"
+	"github.com/arturgoms/tnt/internal/config"
+	"github.com/arturgoms/tnt/internal/tui"
 	"github.com/spf13/cobra"
 )
 

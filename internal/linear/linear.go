@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/arturgomes/tnt/internal/plans"
+	"github.com/arturgoms/tnt/internal/plans"
 )
 
 type Issue struct {

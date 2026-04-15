@@ -5,7 +5,7 @@ GOBIN = $(HOME)/go/bin
 .PHONY: build install clean tidy
 
 build:
-	go build -ldflags "-X github.com/arturgomes/tnt/cmd.Version=$(VERSION)" -o $(BINARY) .
+	go build -ldflags "-X github.com/arturgoms/tnt/cmd.Version=$(VERSION)" -o $(BINARY) .
 
 install: build
 	mv $(BINARY) $(GOBIN)/$(BINARY)

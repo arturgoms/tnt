@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/arturgomes/tnt/internal/theme"
-	"github.com/arturgomes/tnt/internal/worktree"
+	"github.com/arturgoms/tnt/internal/theme"
+	"github.com/arturgoms/tnt/internal/worktree"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"

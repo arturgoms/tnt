@@ -1,7 +1,7 @@
 package theme
 
 import (
-	"github.com/arturgomes/tnt/internal/config"
+	"github.com/arturgoms/tnt/internal/config"
 	"github.com/charmbracelet/lipgloss"
 )
 

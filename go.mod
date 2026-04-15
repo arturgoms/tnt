@@ -1,4 +1,4 @@
-module github.com/arturgomes/tnt
+module github.com/arturgoms/tnt
 
 go 1.25.5
 

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/arturgomes/tnt/internal/agents"
+	"github.com/arturgoms/tnt/internal/agents"
 )
 
 func targetToFile(target string) string {

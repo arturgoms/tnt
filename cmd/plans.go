@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/arturgomes/tnt/internal/plans"
-	"github.com/arturgomes/tnt/internal/theme"
+	"github.com/arturgoms/tnt/internal/plans"
+	"github.com/arturgoms/tnt/internal/theme"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"

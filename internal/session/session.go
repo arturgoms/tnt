@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/arturgomes/tnt/internal/config"
-	"github.com/arturgomes/tnt/internal/tmux"
-	"github.com/arturgomes/tnt/internal/worktree"
+	"github.com/arturgoms/tnt/internal/config"
+	"github.com/arturgoms/tnt/internal/tmux"
+	"github.com/arturgoms/tnt/internal/worktree"
 )
 
 type PaneType string
