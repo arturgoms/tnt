@@ -12,7 +12,7 @@ var exampleConfig []byte
 //go:embed layouts
 var layoutsFS embed.FS
 
-//go:embed project.config.example.json
+//go:embed projects/example/config.json
 var projectConfigExample []byte
 
 func main() {

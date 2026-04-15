@@ -95,7 +95,11 @@ func runInstall() error {
 		fmt.Printf("  %s  created  %s\n", tick, dest)
 	}
 
-	exampleProject := filepath.Join(base, "project.config.example.json")
+	exampleProjectDir := filepath.Join(base, "projects", "example")
+	if err := os.MkdirAll(exampleProjectDir, 0755); err != nil {
+		return fmt.Errorf("create projects/example: %w", err)
+	}
+	exampleProject := filepath.Join(exampleProjectDir, "config.json")
 	if _, err := os.Stat(exampleProject); os.IsNotExist(err) {
 		if err := os.WriteFile(exampleProject, ProjectConfigExample, 0644); err != nil {
 			return fmt.Errorf("write project config example: %w", err)
@@ -107,7 +111,7 @@ func runInstall() error {
 
 	fmt.Println()
 	fmt.Printf("  Edit %s to configure your workspaces.\n", cfgPath)
-	fmt.Printf("  Copy %s to projects/{repo}/config.json for each repo.\n", exampleProject)
+	fmt.Printf("  See %s for a project config reference.\n", exampleProject)
 	fmt.Println()
 	return nil
 }

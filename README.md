@@ -130,7 +130,7 @@ Each repository can have a `config.json` at `~/.config/tnt/projects/{repo}/confi
 | `services[].cwd` | Working directory relative to the worktree root |
 | `services[].setup` | Commands run before `run` on each start (migrations, installs) |
 
-A starter file is installed at `~/.config/tnt/project.config.example.json` by `tnt install`.
+A reference config is installed at `~/.config/tnt/projects/example/config.json` by `tnt install`.
 
 ### Session Persistence
 
